@@ -10,6 +10,8 @@ enum SuggestionAvailabilityEvaluator {
     static func disabledReason(
         globallyEnabled: Bool = true,
         temporarilyPaused: Bool = false,
+        isLowPowerModeActive: Bool = false,
+        isLowPowerModeAutoDisableEnabled: Bool = false,
         disabledAppBundleIdentifiers: Set<String> = [],
         disabledDomains: Set<String> = [],
         suggestInIntegratedTerminals: Bool = false,
@@ -25,6 +27,142 @@ enum SuggestionAvailabilityEvaluator {
             return "Cotabby is temporarily paused."
         }
 
+        // Same tier as the two checks above: a full suppression the user opted into, rather than a
+        // per-app/per-domain/per-field rule. Gated behind its own toggle (default on) so a user who
+        // wants autocomplete regardless of battery impact can opt back out.
+        guard !isSuppressedByLowPowerMode(
+            isActive: isLowPowerModeActive,
+            autoDisableEnabled: isLowPowerModeAutoDisableEnabled
+        ) else {
+            return "Cotabby is paused because Low Power Mode is on."
+        }
+
+        if let reason = locationDisabledReason(
+            disabledAppBundleIdentifiers: disabledAppBundleIdentifiers,
+            disabledDomains: disabledDomains,
+            suggestInIntegratedTerminals: suggestInIntegratedTerminals,
+            focusSnapshot: focusSnapshot
+        ) {
+            return reason
+        }
+
+        guard inputMonitoringGranted else {
+            return "Input Monitoring permission is required before Cotabby can react to typing."
+        }
+
+        guard checkCapability else {
+            return nil
+        }
+
+        switch focusSnapshot.capability {
+        case .supported:
+            return nil
+        case let .blocked(reason), let .unsupported(reason):
+            return reason
+        }
+    }
+
+    static func shouldSchedulePrediction(
+        globallyEnabled: Bool = true,
+        temporarilyPaused: Bool = false,
+        isLowPowerModeActive: Bool = false,
+        isLowPowerModeAutoDisableEnabled: Bool = false,
+        disabledAppBundleIdentifiers: Set<String> = [],
+        disabledDomains: Set<String> = [],
+        suggestInIntegratedTerminals: Bool = false,
+        inputMonitoringGranted: Bool,
+        focusSnapshot: FocusSnapshot
+    ) -> Bool {
+        disabledReason(
+            globallyEnabled: globallyEnabled,
+            temporarilyPaused: temporarilyPaused,
+            isLowPowerModeActive: isLowPowerModeActive,
+            isLowPowerModeAutoDisableEnabled: isLowPowerModeAutoDisableEnabled,
+            disabledAppBundleIdentifiers: disabledAppBundleIdentifiers,
+            disabledDomains: disabledDomains,
+            suggestInIntegratedTerminals: suggestInIntegratedTerminals,
+            inputMonitoringGranted: inputMonitoringGranted,
+            focusSnapshot: focusSnapshot
+        ) == nil
+    }
+
+    /// Whether the environment allows visual context capture to start.
+    ///
+    /// Delegates to `disabledReason` with capability checking disabled so transient field
+    /// states (text selected, secure field) are intentionally ignored — OCR should start
+    /// early in those cases and be ready by the time the user begins typing.
+    ///
+    /// Two conditions gate capture here and deliberately NOT in `disabledReason`, because both
+    /// suppress only the screenshot/OCR pipeline while predictions keep running (they just go out
+    /// without visual context):
+    /// - Fast mode: the user opted into faster, text-only suggestions.
+    /// - Missing Screen Recording permission: the permission is optional, so its absence forces the
+    ///   same text-only behavior as fast mode instead of disabling autocomplete.
+    static func shouldCaptureVisualContext(
+        globallyEnabled: Bool = true,
+        temporarilyPaused: Bool = false,
+        isLowPowerModeActive: Bool = false,
+        isLowPowerModeAutoDisableEnabled: Bool = false,
+        disabledAppBundleIdentifiers: Set<String> = [],
+        disabledDomains: Set<String> = [],
+        suggestInIntegratedTerminals: Bool = false,
+        inputMonitoringGranted: Bool,
+        screenRecordingGranted: Bool,
+        focusSnapshot: FocusSnapshot,
+        isFastModeEnabled: Bool = false
+    ) -> Bool {
+        guard !isFastModeEnabled else {
+            return false
+        }
+
+        guard screenRecordingGranted else {
+            return false
+        }
+
+        return disabledReason(
+            globallyEnabled: globallyEnabled,
+            temporarilyPaused: temporarilyPaused,
+            isLowPowerModeActive: isLowPowerModeActive,
+            isLowPowerModeAutoDisableEnabled: isLowPowerModeAutoDisableEnabled,
+            disabledAppBundleIdentifiers: disabledAppBundleIdentifiers,
+            disabledDomains: disabledDomains,
+            suggestInIntegratedTerminals: suggestInIntegratedTerminals,
+            inputMonitoringGranted: inputMonitoringGranted,
+            focusSnapshot: focusSnapshot,
+            checkCapability: false
+        ) == nil
+    }
+
+    static func shouldSchedulePredictionWhenVisualContextBecomesReady(
+        focusSnapshot: FocusSnapshot,
+        matching identity: FocusedInputIdentity
+    ) -> Bool {
+        guard case .supported = focusSnapshot.capability,
+              let context = focusSnapshot.context,
+              context.identity == identity
+        else {
+            return false
+        }
+
+        return SuggestionRequestFactory.shouldGenerateSuggestion(for: context.precedingText)
+    }
+
+    /// Whether the Low Power Mode gate should suppress autocomplete: the Mac must actually be in Low
+    /// Power Mode, and the user must not have opted out of the auto-pause behavior. Broken out of
+    /// `disabledReason` to keep that function's branch count readable as gates accumulate.
+    private static func isSuppressedByLowPowerMode(isActive: Bool, autoDisableEnabled: Bool) -> Bool {
+        isActive && autoDisableEnabled
+    }
+
+    /// The "where Cotabby runs" rules: per-app disable, per-site disable, standalone terminal apps,
+    /// and integrated terminals. Broken out of `disabledReason` (same behavior, same order) purely to
+    /// keep that function's branch count readable as gates accumulate.
+    private static func locationDisabledReason(
+        disabledAppBundleIdentifiers: Set<String>,
+        disabledDomains: Set<String>,
+        suggestInIntegratedTerminals: Bool,
+        focusSnapshot: FocusSnapshot
+    ) -> String? {
         if let bundleIdentifier = focusSnapshot.bundleIdentifier,
            disabledAppBundleIdentifiers.contains(bundleIdentifier) {
             return "Cotabby is disabled in \(focusSnapshot.applicationName)."
@@ -52,96 +190,6 @@ enum SuggestionAvailabilityEvaluator {
             return "Cotabby is not available in the integrated terminal."
         }
 
-        guard inputMonitoringGranted else {
-            return "Input Monitoring permission is required before Cotabby can react to typing."
-        }
-
-        guard checkCapability else {
-            return nil
-        }
-
-        switch focusSnapshot.capability {
-        case .supported:
-            return nil
-        case let .blocked(reason), let .unsupported(reason):
-            return reason
-        }
-    }
-
-    static func shouldSchedulePrediction(
-        globallyEnabled: Bool = true,
-        temporarilyPaused: Bool = false,
-        disabledAppBundleIdentifiers: Set<String> = [],
-        disabledDomains: Set<String> = [],
-        suggestInIntegratedTerminals: Bool = false,
-        inputMonitoringGranted: Bool,
-        focusSnapshot: FocusSnapshot
-    ) -> Bool {
-        disabledReason(
-            globallyEnabled: globallyEnabled,
-            temporarilyPaused: temporarilyPaused,
-            disabledAppBundleIdentifiers: disabledAppBundleIdentifiers,
-            disabledDomains: disabledDomains,
-            suggestInIntegratedTerminals: suggestInIntegratedTerminals,
-            inputMonitoringGranted: inputMonitoringGranted,
-            focusSnapshot: focusSnapshot
-        ) == nil
-    }
-
-    /// Whether the environment allows visual context capture to start.
-    ///
-    /// Delegates to `disabledReason` with capability checking disabled so transient field
-    /// states (text selected, secure field) are intentionally ignored — OCR should start
-    /// early in those cases and be ready by the time the user begins typing.
-    ///
-    /// Two conditions gate capture here and deliberately NOT in `disabledReason`, because both
-    /// suppress only the screenshot/OCR pipeline while predictions keep running (they just go out
-    /// without visual context):
-    /// - Fast mode: the user opted into faster, text-only suggestions.
-    /// - Missing Screen Recording permission: the permission is optional, so its absence forces the
-    ///   same text-only behavior as fast mode instead of disabling autocomplete.
-    static func shouldCaptureVisualContext(
-        globallyEnabled: Bool = true,
-        temporarilyPaused: Bool = false,
-        disabledAppBundleIdentifiers: Set<String> = [],
-        disabledDomains: Set<String> = [],
-        suggestInIntegratedTerminals: Bool = false,
-        inputMonitoringGranted: Bool,
-        screenRecordingGranted: Bool,
-        focusSnapshot: FocusSnapshot,
-        isFastModeEnabled: Bool = false
-    ) -> Bool {
-        guard !isFastModeEnabled else {
-            return false
-        }
-
-        guard screenRecordingGranted else {
-            return false
-        }
-
-        return disabledReason(
-            globallyEnabled: globallyEnabled,
-            temporarilyPaused: temporarilyPaused,
-            disabledAppBundleIdentifiers: disabledAppBundleIdentifiers,
-            disabledDomains: disabledDomains,
-            suggestInIntegratedTerminals: suggestInIntegratedTerminals,
-            inputMonitoringGranted: inputMonitoringGranted,
-            focusSnapshot: focusSnapshot,
-            checkCapability: false
-        ) == nil
-    }
-
-    static func shouldSchedulePredictionWhenVisualContextBecomesReady(
-        focusSnapshot: FocusSnapshot,
-        matching identity: FocusedInputIdentity
-    ) -> Bool {
-        guard case .supported = focusSnapshot.capability,
-              let context = focusSnapshot.context,
-              context.identity == identity
-        else {
-            return false
-        }
-
-        return SuggestionRequestFactory.shouldGenerateSuggestion(for: context.precedingText)
+        return nil
     }
 }

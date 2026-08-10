@@ -27,6 +27,17 @@ final class RigPermissionProvider: SuggestionPermissionProviding {
 }
 
 @MainActor
+final class RigLowPowerModeProvider: SuggestionLowPowerModeProviding {
+    var isLowPowerModeEnabled = false
+
+    let subject = PassthroughSubject<Bool, Never>()
+
+    var isLowPowerModeEnabledPublisher: AnyPublisher<Bool, Never> {
+        subject.eraseToAnyPublisher()
+    }
+}
+
+@MainActor
 final class RigFocusProvider: SuggestionFocusProviding {
     var snapshot: FocusSnapshot
     private(set) var refreshCount = 0
@@ -205,6 +216,7 @@ final class RigVisualContextCoordinator: VisualContextCoordinating {
 struct CoordinatorRig {
     let coordinator: SuggestionCoordinator
     let permissionProvider: RigPermissionProvider
+    let lowPowerModeProvider: RigLowPowerModeProvider
     let focusProvider: RigFocusProvider
     let inputMonitor: RigInputMonitor
     let overlayController: RigOverlayController
@@ -231,6 +243,7 @@ func makeCoordinatorRig(
         context: snapshot
     )
     let permissionProvider = RigPermissionProvider()
+    let lowPowerModeProvider = RigLowPowerModeProvider()
     let focusProvider = RigFocusProvider(snapshot: focusSnapshot)
     let inputMonitor = RigInputMonitor()
     let overlayController = RigOverlayController(state: overlayState)
@@ -243,6 +256,7 @@ func makeCoordinatorRig(
     let interactionState = SuggestionInteractionState()
     let coordinator = SuggestionCoordinator(
         permissionManager: permissionProvider,
+        lowPowerModeProvider: lowPowerModeProvider,
         focusModel: focusProvider,
         inputMonitor: inputMonitor,
         overlayController: overlayController,
@@ -265,6 +279,7 @@ func makeCoordinatorRig(
     return CoordinatorRig(
         coordinator: coordinator,
         permissionProvider: permissionProvider,
+        lowPowerModeProvider: lowPowerModeProvider,
         focusProvider: focusProvider,
         inputMonitor: inputMonitor,
         overlayController: overlayController,

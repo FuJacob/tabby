@@ -144,6 +144,88 @@ final class SuggestionAvailabilityEvaluatorTests: XCTestCase {
         XCTAssertEqual(reason, "Cotabby is temporarily paused.")
     }
 
+    // MARK: - Low Power Mode gating
+
+    func test_disabledReason_whenLowPowerModeActiveAndAutoDisableEnabled_returnsFixedCopy() {
+        let reason = SuggestionAvailabilityEvaluator.disabledReason(
+            globallyEnabled: true,
+            isLowPowerModeActive: true,
+            isLowPowerModeAutoDisableEnabled: true,
+            inputMonitoringGranted: true,
+            focusSnapshot: makeSnapshot(capability: .supported)
+        )
+
+        XCTAssertEqual(reason, "Cotabby is paused because Low Power Mode is on.")
+    }
+
+    /// The user opted out of auto-pausing: Low Power Mode being active must not suppress
+    /// suggestions when the toggle is off.
+    func test_disabledReason_whenLowPowerModeActiveButAutoDisableOptedOut_returnsNil() {
+        let reason = SuggestionAvailabilityEvaluator.disabledReason(
+            globallyEnabled: true,
+            isLowPowerModeActive: true,
+            isLowPowerModeAutoDisableEnabled: false,
+            inputMonitoringGranted: true,
+            focusSnapshot: makeSnapshot(capability: .supported)
+        )
+
+        XCTAssertNil(reason, "Opting out should let suggestions run in Low Power Mode")
+    }
+
+    /// The setting is on, but the Mac is not currently in Low Power Mode: nothing should suppress.
+    func test_disabledReason_whenAutoDisableEnabledButLowPowerModeInactive_returnsNil() {
+        let reason = SuggestionAvailabilityEvaluator.disabledReason(
+            globallyEnabled: true,
+            isLowPowerModeActive: false,
+            isLowPowerModeAutoDisableEnabled: true,
+            inputMonitoringGranted: true,
+            focusSnapshot: makeSnapshot(capability: .supported)
+        )
+
+        XCTAssertNil(reason)
+    }
+
+    /// Same tier as the global-off and temporarily-paused checks: Low Power Mode should win over a
+    /// per-app disable reason so the user sees the more fundamental cause.
+    func test_disabledReason_lowPowerMode_winsOverAppDisabled() {
+        let reason = SuggestionAvailabilityEvaluator.disabledReason(
+            globallyEnabled: true,
+            isLowPowerModeActive: true,
+            isLowPowerModeAutoDisableEnabled: true,
+            disabledAppBundleIdentifiers: ["app.test"],
+            inputMonitoringGranted: true,
+            focusSnapshot: makeSnapshot(capability: .supported)
+        )
+
+        XCTAssertEqual(reason, "Cotabby is paused because Low Power Mode is on.")
+    }
+
+    func test_shouldSchedulePrediction_falseWhenLowPowerModeActiveAndAutoDisableEnabled() {
+        let ok = SuggestionAvailabilityEvaluator.shouldSchedulePrediction(
+            globallyEnabled: true,
+            isLowPowerModeActive: true,
+            isLowPowerModeAutoDisableEnabled: true,
+            inputMonitoringGranted: true,
+            focusSnapshot: makeSnapshot(capability: .supported)
+        )
+
+        XCTAssertFalse(ok)
+    }
+
+    func test_shouldCaptureVisualContext_falseWhenLowPowerModeActiveAndAutoDisableEnabled() {
+        let ok = SuggestionAvailabilityEvaluator.shouldCaptureVisualContext(
+            globallyEnabled: true,
+            isLowPowerModeActive: true,
+            isLowPowerModeAutoDisableEnabled: true,
+            inputMonitoringGranted: true,
+            screenRecordingGranted: true,
+            focusSnapshot: makeSnapshot(capability: .supported),
+            isFastModeEnabled: false
+        )
+
+        XCTAssertFalse(ok)
+    }
+
     func test_disabledReason_whenFocusedDomainIsDisabled_returnsSiteReason() {
         let reason = SuggestionAvailabilityEvaluator.disabledReason(
             globallyEnabled: true,

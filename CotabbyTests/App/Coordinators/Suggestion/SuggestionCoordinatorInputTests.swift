@@ -307,6 +307,32 @@ final class SuggestionCoordinatorInputTests: XCTestCase {
         XCTAssertEqual(rig.visualContext.cancelCalls, [true])
     }
 
+    // MARK: - Low Power Mode changes
+
+    func test_lowPowerModeChange_disablesPipelineWhenActiveAndAutoDisableEnabled() {
+        // The fixture default (`isLowPowerModeAutoDisableEnabled: true`) mirrors production.
+        let rig = retained(makeCoordinatorRig())
+        rig.lowPowerModeProvider.isLowPowerModeEnabled = true
+
+        rig.coordinator.handleLowPowerModeChange()
+
+        guard case let .disabled(reason) = rig.coordinator.state else {
+            return XCTFail("Expected disabled, got \(rig.coordinator.state)")
+        }
+        XCTAssertEqual(reason, "Cotabby is paused because Low Power Mode is on.")
+    }
+
+    func test_lowPowerModeChange_leavesPipelineRunningWhenAutoDisableOptedOut() {
+        let rig = retained(makeCoordinatorRig(
+            settingsSnapshot: CotabbyTestFixtures.settingsSnapshot(isLowPowerModeAutoDisableEnabled: false)
+        ))
+        rig.lowPowerModeProvider.isLowPowerModeEnabled = true
+
+        rig.coordinator.handleLowPowerModeChange()
+
+        XCTAssertEqual(rig.coordinator.state, .idle, "Opting out must keep autocomplete running in Low Power Mode")
+    }
+
     func test_suppressedSyntheticInput_logsWithoutMutatingState() {
         let rig = retained(makeCoordinatorRig())
         let stateBefore = rig.coordinator.state

@@ -14,6 +14,21 @@ extension EngineAndModelPaneView {
         Section("Power") {
             Toggle(
                 isOn: Binding(
+                    get: { suggestionSettings.isLowPowerModeAutoDisableEnabled },
+                    set: { suggestionSettings.setLowPowerModeAutoDisableEnabled($0) }
+                )
+            ) {
+                SettingsRowLabel(
+                    title: "Pause in Low Power Mode",
+                    description: "Automatically pause suggestions while your Mac is in Low Power " +
+                        "Mode, so Cotabby doesn't work against its battery-saving throttling.",
+                    systemImage: "bolt.slash.circle"
+                )
+            }
+            .settingsItem(.lowPowerModeAutoDisable)
+
+            Toggle(
+                isOn: Binding(
                     get: { suggestionSettings.isPowerBasedModelSwitchingEnabled },
                     set: { suggestionSettings.setPowerBasedModelSwitchingEnabled($0) }
                 )

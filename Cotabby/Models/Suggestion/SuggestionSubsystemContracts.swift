@@ -22,6 +22,15 @@ protocol SuggestionPermissionProviding: AnyObject {
     var screenRecordingGrantedPublisher: AnyPublisher<Bool, Never> { get }
 }
 
+/// Live OS-level Low Power Mode state, mirroring `SuggestionPermissionProviding`'s shape: a
+/// synchronous read plus an erased publisher so the coordinator can subscribe without depending on
+/// `LowPowerModeMonitor`'s concrete `@Published` storage.
+@MainActor
+protocol SuggestionLowPowerModeProviding: AnyObject {
+    var isLowPowerModeEnabled: Bool { get }
+    var isLowPowerModeEnabledPublisher: AnyPublisher<Bool, Never> { get }
+}
+
 @MainActor
 protocol SuggestionFocusProviding: AnyObject {
     var snapshot: FocusSnapshot { get }

@@ -28,6 +28,7 @@ final class SuggestionSettingsDomainTests: XCTestCase {
         defaults.set(SuggestionEngineKind.appleIntelligence.rawValue, forKey: "cotabbySelectedEngine")
         defaults.set(true, forKey: "cotabbyClipboardContextEnabled")
         defaults.set(false, forKey: "cotabbyShowAcceptanceHint")
+        defaults.set(false, forKey: "cotabbyLowPowerModeAutoDisableEnabled")
 
         let data = SuggestionSettingsStore(userDefaults: defaults).load(configuration: .standard)
 
@@ -35,6 +36,7 @@ final class SuggestionSettingsDomainTests: XCTestCase {
         XCTAssertEqual(data.engine.selectedEngine, .appleIntelligence)
         XCTAssertTrue(data.context.isClipboardContextEnabled)
         XCTAssertFalse(data.presentation.showAcceptanceHint)
+        XCTAssertFalse(data.general.isLowPowerModeAutoDisableEnabled)
         XCTAssertEqual(data.shortcuts.acceptance.keyCode, SuggestionSettingsStore.defaultAcceptanceKeyCode)
     }
 

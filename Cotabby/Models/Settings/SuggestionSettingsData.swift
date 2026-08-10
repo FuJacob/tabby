@@ -11,6 +11,10 @@ struct SuggestionGeneralSettings: Equatable {
     var disabledAppRules: [DisabledApplicationRule]
     var suggestInIntegratedTerminals: Bool
     var isPerformanceTrackingEnabled: Bool
+    /// When true (the default), Cotabby automatically pauses suggestions while macOS Low Power Mode
+    /// is on, so generation does not fight the OS's own battery-saving throttling. Read alongside the
+    /// live `LowPowerModeMonitor` state by `SuggestionAvailabilityEvaluator`.
+    var isLowPowerModeAutoDisableEnabled: Bool
 }
 
 /// Backend selection, endpoint configuration, and power-source routing.
@@ -139,6 +143,11 @@ extension SuggestionSettingsData {
     var isPerformanceTrackingEnabled: Bool {
         get { general.isPerformanceTrackingEnabled }
         set { general.isPerformanceTrackingEnabled = newValue }
+    }
+
+    var isLowPowerModeAutoDisableEnabled: Bool {
+        get { general.isLowPowerModeAutoDisableEnabled }
+        set { general.isLowPowerModeAutoDisableEnabled = newValue }
     }
 
     var selectedEngine: SuggestionEngineKind {
