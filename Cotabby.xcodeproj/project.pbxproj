@@ -470,6 +470,7 @@
 		99334CDC1399D03019202E85 /* CurrentWordExtractorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9331B12568E717FCF9A5086 /* CurrentWordExtractorTests.swift */; };
 		996786038E31C671B650DFE4 /* SuggestionOverlayViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9720913FECB22A9A28C96333 /* SuggestionOverlayViews.swift */; };
 		9973763A9F4EA4D8B4AE59EB /* SuggestionEngineRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 384FBCF5D7A3A446C5BE2B8D /* SuggestionEngineRouter.swift */; };
+		998168DC04A6A13D7D1F3165 /* ModelDownloadManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03CA4BBA3C54F840546033E0 /* ModelDownloadManagerTests.swift */; };
 		9A2D50EF4911E45EEB4556D6 /* Aria2OutputParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83457CCF1A50CE83428C363D /* Aria2OutputParser.swift */; };
 		9AE3398FB0E4696C89550C04 /* EmojiMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA8311FAC345FE431FA89855 /* EmojiMatcher.swift */; };
 		9B6C176547D2B6D118572E41 /* BaseCompletionPromptRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C1AE4120FA68524700C9324 /* BaseCompletionPromptRenderer.swift */; };
@@ -782,6 +783,7 @@
 		024A80AEB32CC1AE8C0FF69E /* PerformanceMetricsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceMetricsStore.swift; sourceTree = "<group>"; };
 		0259095D0A3E9B8DC26CB4B0 /* ModelFileValidatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelFileValidatorTests.swift; sourceTree = "<group>"; };
 		0397F1DACB094A0F6A66BC0E /* it.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = it.txt; sourceTree = "<group>"; };
+		03CA4BBA3C54F840546033E0 /* ModelDownloadManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelDownloadManagerTests.swift; sourceTree = "<group>"; };
 		04364C3242A25358E7C85FD6 /* ClipboardRelevanceFilterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardRelevanceFilterTests.swift; sourceTree = "<group>"; };
 		049102F0ED85618106A042C4 /* CalendarAccessibilityCaptureGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarAccessibilityCaptureGuard.swift; sourceTree = "<group>"; };
 		04F95814016D80E0A23974F0 /* ActiveSuggestionSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActiveSuggestionSession.swift; sourceTree = "<group>"; };
@@ -1990,6 +1992,7 @@
 				DDA0A1D64275BC85AEBBB852 /* Aria2DownloadServiceTests.swift */,
 				F7F727A325ECE687B32CDC38 /* Aria2ProvisionerTests.swift */,
 				E94A6036F4B703A2FF7F68EF /* DownloadFileRescuerTests.swift */,
+				03CA4BBA3C54F840546033E0 /* ModelDownloadManagerTests.swift */,
 				0259095D0A3E9B8DC26CB4B0 /* ModelFileValidatorTests.swift */,
 			);
 			path = ModelManagement;
@@ -3826,6 +3829,7 @@
 				85BB2FAD4BFE9077AEE2A262 /* MidWordContinuationPolicyTests.swift in Sources */,
 				081EB4DF65AD5736DE7FBFDE /* MirrorOverlayLayoutTests.swift in Sources */,
 				B3E9C077CF064F2DEC3E22B8 /* ModelAndPresentationValueTests.swift in Sources */,
+				998168DC04A6A13D7D1F3165 /* ModelDownloadManagerTests.swift in Sources */,
 				4D2C1A0B4FBEF95CBFB9F481 /* ModelFileValidatorTests.swift in Sources */,
 				1419979A0649B00DACF75C61 /* OCRTextHygieneTests.swift in Sources */,
 				5FA377F90142B8FC53FD9F61 /* OllamaPreloadWorkControllerTests.swift in Sources */,
@@ -4073,7 +4077,6 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = BVFJ37Q66V;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -4140,7 +4143,6 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = BVFJ37Q66V;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;

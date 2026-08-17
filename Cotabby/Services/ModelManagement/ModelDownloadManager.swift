@@ -95,6 +95,12 @@ final class ModelDownloadManager: ObservableObject {
     private var activeSessionDelegates: [String: ModelDownloadSessionDelegate] = [:]
     private var urlSessionResumeDataByFilename: [String: Data] = [:]
 
+    private enum RequestedOutcome {
+        case paused
+        case cancelled
+    }
+    private var requestedOutcomes: [String: RequestedOutcome] = [:]
+
     init(runtimeDirectoryURL: URL? = nil) {
         let primaryDirectoryURL =
             runtimeDirectoryURL ?? BundledRuntimeLocator.userRuntimeDirectoryURL()
@@ -233,6 +239,7 @@ final class ModelDownloadManager: ObservableObject {
 
     /// Pauses an in-flight download, saving partial metadata so it can be resumed later.
     func pause(filename: String) {
+        requestedOutcomes[filename] = .paused
         if let aria2Service = activeAria2Services[filename] {
             aria2Service.pause()
         } else if let delegate = activeSessionDelegates[filename] {
@@ -249,6 +256,7 @@ final class ModelDownloadManager: ObservableObject {
 
     /// User-initiated cancel of an in-flight or paused model download.
     func cancel(filename: String) {
+        requestedOutcomes[filename] = .cancelled
         if let aria2Service = activeAria2Services[filename] {
             aria2Service.cancel()
         } else if let delegate = activeSessionDelegates[filename] {
@@ -302,17 +310,26 @@ final class ModelDownloadManager: ObservableObject {
             return
         }
 
-        Task {
+        let destinationDirectory = runtimeDirectoryURL
+
+        Task.detached {
             do {
-                try ensureRuntimeDirectoryExists()
-                let destinationDirectory = runtimeDirectoryURL
                 let fileManager = FileManager.default
+                try fileManager.createDirectory(
+                    at: destinationDirectory,
+                    withIntermediateDirectories: true
+                )
 
                 for sourceURL in sourceURLs {
                     let targetURL = destinationDirectory.appendingPathComponent(
                         sourceURL.lastPathComponent,
                         isDirectory: false
                     )
+
+                    // Skip if source and target refer to the exact same file
+                    if sourceURL.standardizedFileURL == targetURL.standardizedFileURL {
+                        continue
+                    }
 
                     if fileManager.fileExists(atPath: targetURL.path) {
                         try fileManager.removeItem(at: targetURL)
@@ -325,15 +342,15 @@ final class ModelDownloadManager: ObservableObject {
                     )
                 }
 
-                await MainActor.run {
-                    self.recomputeInstalledModelFilenames()
-                    self.refreshModelStates()
-                    self.onModelDirectoryChanged?()
+                await MainActor.run { [weak self] in
+                    self?.recomputeInstalledModelFilenames()
+                    self?.refreshModelStates()
+                    self?.onModelDirectoryChanged?()
                 }
             } catch {
                 CotabbyLogger.models.error(
                     "Failed to import models: \(error.localizedDescription)",
-                    metadata: ["destination": .string(self.runtimeDirectoryURL.path)]
+                    metadata: ["destination": .string(destinationDirectory.path)]
                 )
             }
         }
@@ -344,12 +361,21 @@ final class ModelDownloadManager: ObservableObject {
             downloadTasks[model.filename] = nil
             activeAria2Services.removeValue(forKey: model.filename)
             activeSessionDelegates.removeValue(forKey: model.filename)
+            requestedOutcomes.removeValue(forKey: model.filename)
         }
 
         do {
             if !Aria2Locator.isAvailable {
                 // Attempt on-demand provisioning of aria2c if not already available on the system
                 try? await Aria2Provisioner.shared.provisionIfNeeded()
+            }
+
+            // Check if user requested pause or cancel while provisioning was running
+            if requestedOutcomes[model.filename] == .paused {
+                throw Aria2DownloadError.paused
+            }
+            if requestedOutcomes[model.filename] == .cancelled || Task.isCancelled {
+                throw CancellationError()
             }
 
             if Aria2Locator.isAvailable {
@@ -473,9 +499,11 @@ final class ModelDownloadManager: ObservableObject {
         }
 
         do {
-            try ModelFileValidator.validateCompleteness(
-                of: stagingURL, declaredContentLength: downloadResult.response.expectedContentLength
-            )
+            if let expectedSize = model.expectedSizeBytes {
+                try ModelFileValidator.validateCompleteness(
+                    of: stagingURL, declaredContentLength: expectedSize
+                )
+            }
             try ModelFileValidator.validateSize(
                 of: stagingURL, expectedBytes: model.expectedSizeBytes
             )
@@ -489,26 +517,19 @@ final class ModelDownloadManager: ObservableObject {
         }
     }
 
-    /// Atomically moves the fully-validated staging file to `destinationURL`.
-    /// Overwrites any existing target file on success; removes `stagingURL` on failure.
+    /// Promotes a validated staged file into the install location. When a model already exists there,
+    /// an atomic replace is used so a crash or error mid-promotion can never destroy the existing good
+    /// model before the replacement is committed (the old delete-then-move could leave nothing
+    /// installed). `replaceItemAt` removes the staged file as part of the swap.
     private static func promoteStagedFile(
         at stagingURL: URL,
         to destinationURL: URL,
         fileManager: FileManager = .default
     ) throws {
         if fileManager.fileExists(atPath: destinationURL.path) {
-            do {
-                try fileManager.removeItem(at: destinationURL)
-            } catch {
-                try? fileManager.removeItem(at: stagingURL)
-                throw error
-            }
-        }
-        do {
+            _ = try fileManager.replaceItemAt(destinationURL, withItemAt: stagingURL)
+        } else {
             try fileManager.moveItem(at: stagingURL, to: destinationURL)
-        } catch {
-            try? fileManager.removeItem(at: stagingURL)
-            throw error
         }
     }
 
