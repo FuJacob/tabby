@@ -608,10 +608,16 @@ extension SuggestionCoordinator {
     }
 
     private static func seamSuppressionReason(for verdict: CompletionSeamGuard.Verdict) -> String {
-        if case .seamMisspelling = verdict {
+        switch verdict {
+        case .seamMisspelling:
             return "seamMisspelling"
+        case .leadingWordMisspelling:
+            return "leadingWordMisspelling"
+        case .junkPunctuationRun:
+            return "seamJunkPunctuationRun"
+        case .allow:
+            return "unknownSeamGuardSuppression"
         }
-        return "seamJunkPunctuationRun"
     }
 
     /// Promotes a generated result to `ready` only when it is still fresh for the current field.
@@ -730,13 +736,16 @@ extension SuggestionCoordinator {
             return
         }
 
-        // Last line of defense before display: junk punctuation runs and mid-word splices that
-        // misspell the word being typed read as glitches, so showing nothing beats showing them.
-        // The spell lookup runs at most once per generation and only in the mid-word case.
+        // Last line of defense before display: junk punctuation runs, mid-word splices, and newly
+        // started words that the native checker can actually correct read as glitches, so showing
+        // nothing beats showing them. The leading-word check is intentionally fail-open for names
+        // and jargon with no correction candidate.
         let seamVerdict = CompletionSeamGuard.verdict(
             precedingText: liveContext.precedingText,
             completion: result.text,
-            isKnownWord: { !spellChecker.isTypo($0) }
+            isKnownWord: { !spellChecker.isTypo($0) },
+            isTypo: { spellChecker.isTypo($0) },
+            bestCorrection: { spellChecker.bestCorrection(for: $0) }
         )
         if seamVerdict != .allow {
             clearSuggestion()

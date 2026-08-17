@@ -119,7 +119,9 @@ final class LlamaSuggestionEvalTests: XCTestCase {
             let verdict = CompletionSeamGuard.verdict(
                 precedingText: evalCase.precedingText,
                 completion: candidate,
-                isKnownWord: { !spellChecker.isTypo($0) }
+                isKnownWord: { !spellChecker.isTypo($0) },
+                isTypo: { spellChecker.isTypo($0) },
+                bestCorrection: { spellChecker.bestCorrection(for: $0) }
             )
             if verdict != .allow {
                 shownText = nil

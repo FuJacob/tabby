@@ -14,6 +14,14 @@ final class CompletionSeamGuardTests: XCTestCase {
     private let knowsEverything: (String) -> Bool = { _ in true }
     private let knowsNothing: (String) -> Bool = { _ in false }
 
+    private func typo(_ words: Set<String>) -> (String) -> Bool {
+        { words.contains($0.lowercased()) }
+    }
+
+    private func corrections(_ values: [String: String]) -> (String) -> String? {
+        { values[$0.lowercased()] }
+    }
+
     // MARK: - Junk punctuation runs
 
     func testFreshPunctuationRunIsSuppressed() {
@@ -197,6 +205,68 @@ final class CompletionSeamGuardTests: XCTestCase {
                 precedingText: "Thanks again for your help",
                 completion: " with the move last weekend.",
                 isKnownWord: knowing(["with"])
+            ),
+            .allow
+        )
+    }
+
+    // MARK: - Leading-word misspellings
+
+    func testMisspelledLeadingWordWithCorrectionIsSuppressed() {
+        XCTAssertEqual(
+            CompletionSeamGuard.verdict(
+                precedingText: "Je veux ",
+                completion: "ecrir plus vite",
+                isKnownWord: knowsEverything,
+                isTypo: typo(["ecrir"]),
+                bestCorrection: corrections(["ecrir": "écrire"])
+            ),
+            .leadingWordMisspelling(word: "ecrir")
+        )
+    }
+
+    func testLeadingWordWithoutCorrectionIsAllowed() {
+        // An unknown name or domain term should not disappear merely because the native checker has
+        // no suggestion for it.
+        XCTAssertEqual(
+            CompletionSeamGuard.verdict(
+                precedingText: "Use ",
+                completion: "cotabby avec soin",
+                isKnownWord: knowsEverything,
+                isTypo: typo(["cotabby"]),
+                bestCorrection: corrections([:])
+            ),
+            .allow
+        )
+    }
+
+    func testCapitalizedLeadingWordIsAllowed() {
+        XCTAssertEqual(
+            CompletionSeamGuard.verdict(
+                precedingText: "Ask ",
+                completion: "Cotypist about it",
+                isKnownWord: knowsEverything,
+                isTypo: typo(["cotypist"]),
+                bestCorrection: corrections(["cotypist": "copyist"])
+            ),
+            .allow
+        )
+    }
+
+    func testMidWordCompletionDoesNotRunLeadingWordChecks() {
+        XCTAssertEqual(
+            CompletionSeamGuard.verdict(
+                precedingText: "Je veux ecr",
+                completion: "irregular",
+                isKnownWord: knowsEverything,
+                isTypo: { _ in
+                    XCTFail("leading-word typo check must not run for a mid-word completion")
+                    return true
+                },
+                bestCorrection: { _ in
+                    XCTFail("leading-word correction must not run for a mid-word completion")
+                    return "écrire"
+                }
             ),
             .allow
         )

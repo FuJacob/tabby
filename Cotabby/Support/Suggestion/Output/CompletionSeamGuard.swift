@@ -10,16 +10,22 @@ import Foundation
 /// - **Junk run**: a run of four or more identical punctuation/symbol characters inside the
 ///   completion, unless the run merely extends an identical run the user already has at the caret
 ///   (continuing an existing `----` divider is legitimate).
-/// - **Seam misspelling**: only in the mid-word case (caret inside a word, completion starts with
-///   word characters), the joined word formed across the seam must be known to the spell checker.
-///   Skipped for capitalized words (names and brands are routinely out-of-dictionary), for short
-///   joins (under four letters), for words with digits, and for CJK text (no space-delimited word
-///   boundaries, and the dictionaries do not cover it).
+/// - **Seam misspelling**: in the mid-word case (caret inside a word, completion starts with word
+///   characters), the joined word formed across the seam must be known to the spell checker.
+/// - **Leading-word misspelling**: when the completion starts a new word, the first generated word
+///   is checked only when the caller can both identify it as a typo and offer a correction. This is
+///   deliberately narrower than dictionary membership so names, jargon, and model vocabulary still
+///   pass through when the native checker has no actionable fix.
+///
+/// Both spelling checks skip capitalized words (names and brands are routinely out-of-dictionary),
+/// short words (under four letters), words with digits, and CJK text (no space-delimited word
+/// boundaries, and the dictionaries do not cover it).
 nonisolated enum CompletionSeamGuard {
     enum Verdict: Equatable {
         case allow
         case junkPunctuationRun
         case seamMisspelling(word: String)
+        case leadingWordMisspelling(word: String)
     }
 
     /// Identical punctuation/symbol characters in a row that count as junk when freshly introduced.
@@ -35,12 +41,16 @@ nonisolated enum CompletionSeamGuard {
         !introducesJunkPunctuationRun(precedingText: precedingText, completion: completion)
     }
 
-    /// `isKnownWord` is injected so the pure rule stays testable and the caller picks the spell
-    /// checking backend; it is only invoked when the mid-word rule actually applies.
+    /// The spell-checking closures are injected so the pure rule stays testable and the caller picks
+    /// the backend. `isKnownWord` covers the mid-word seam; the optional typo/correction pair enables
+    /// the conservative leading-word check without forcing every existing caller to pay a spell
+    /// lookup.
     static func verdict(
         precedingText: String,
         completion: String,
-        isKnownWord: (String) -> Bool
+        isKnownWord: (String) -> Bool,
+        isTypo: ((String) -> Bool)? = nil,
+        bestCorrection: ((String) -> String?)? = nil
     ) -> Verdict {
         if introducesJunkPunctuationRun(precedingText: precedingText, completion: completion) {
             return .junkPunctuationRun
@@ -51,6 +61,14 @@ nonisolated enum CompletionSeamGuard {
             completion: completion
         ), !isKnownWord(seamWord) {
             return .seamMisspelling(word: seamWord)
+        }
+
+        if let leadingWord = misspellingCandidateLeadingWord(
+            precedingText: precedingText,
+            completion: completion
+        ), let isTypo, isTypo(leadingWord), let bestCorrection,
+           bestCorrection(leadingWord) != nil {
+            return .leadingWordMisspelling(word: leadingWord)
         }
 
         return .allow
@@ -115,6 +133,35 @@ nonisolated enum CompletionSeamGuard {
         guard let firstCharacter = seamWord.first, firstCharacter.isLowercase else { return nil }
         guard !containsCJK(seamWord) else { return nil }
         return seamWord
+    }
+
+    /// The first complete word in a completion that begins at a word boundary, or nil when the
+    /// completion is continuing the word at the caret. Only the leading word is checked: Cotabby
+    /// accepts suggestions word-by-word, so later words get their own opportunity to pass through
+    /// this guard after the user accepts the first chunk.
+    private static func misspellingCandidateLeadingWord(
+        precedingText: String,
+        completion: String
+    ) -> String? {
+        // A letter immediately following a letter belongs to the mid-word seam rule above. A
+        // leading space makes it a new word even when the preceding text ends in a letter.
+        guard precedingText.last?.isLetter != true || completion.first?.isWhitespace == true else {
+            return nil
+        }
+
+        let afterWhitespace = completion.drop(while: { $0.isWhitespace })
+        guard let firstCharacter = afterWhitespace.first, firstCharacter.isLetter else {
+            return nil
+        }
+
+        let word = String(afterWhitespace.prefix(while: { $0.isLetter }))
+        guard word.count >= minimumSeamWordLength,
+              firstCharacter.isLowercase,
+              !word.dropFirst().contains(where: { $0.isUppercase }),
+              !containsCJK(word) else {
+            return nil
+        }
+        return word
     }
 
     private static func trailingRunLength(of text: String, character: Character) -> Int {
