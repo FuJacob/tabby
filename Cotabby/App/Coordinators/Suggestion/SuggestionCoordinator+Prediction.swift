@@ -390,14 +390,35 @@ extension SuggestionCoordinator {
             return
         }
 
-        // Streaming half of the seam guard: the pure junk-run rule only. The spell-lookup half
-        // is an XPC and partials drain at token cadence, so it stays on the final apply, which
-        // authoritatively replaces or suppresses whatever streamed.
+        // Junk checks remain cheap enough for every partial. The first generated word is buffered
+        // until its boundary arrives, then its spelling decision is cached for the generation so
+        // the AppKit/XPC lookup never runs at token cadence.
         guard CompletionSeamGuard.allowsStreamedPartial(
             precedingText: liveContext.precedingText,
             completion: partial.text
         ) else {
             return
+        }
+
+        switch suggestionStreamingState.leadingWordGateState {
+        case .pending:
+            switch CompletionSeamGuard.streamedLeadingWordVerdict(
+                precedingText: liveContext.precedingText,
+                completion: partial.text,
+                spellingAssessment: { self.completionSpellingAssessment(for: $0) }
+            ) {
+            case .wait:
+                return
+            case .allow:
+                suggestionStreamingState.resolveLeadingWordGate(.allowed)
+            case .suppress:
+                suggestionStreamingState.resolveLeadingWordGate(.suppressed)
+                return
+            }
+        case .suppressed:
+            return
+        case .allowed:
+            break
         }
 
         _ = interactionState.startSession(
@@ -482,6 +503,20 @@ extension SuggestionCoordinator {
 
         return symSpellCorrector.bestCorrection(for: word, language: language)
             ?? spellChecker.bestCorrection(for: word)
+    }
+
+    /// Collapses native typo detection and correction availability into the seam guard's single
+    /// spelling contract. Keeping this adapter at the orchestration boundary lets the pure guard
+    /// express its policy without knowing about `NSSpellChecker` or accepting contradictory hooks.
+    private func completionSpellingAssessment(
+        for word: String
+    ) -> CompletionSeamGuard.SpellingAssessment {
+        guard spellChecker.isTypo(word) else {
+            return .known
+        }
+        return spellChecker.bestCorrection(for: word) == nil
+            ? .uncorrectableTypo
+            : .correctableTypo
     }
 
     /// Replaces a completed typo after Space without creating a visible correction session.
@@ -743,9 +778,7 @@ extension SuggestionCoordinator {
         let seamVerdict = CompletionSeamGuard.verdict(
             precedingText: liveContext.precedingText,
             completion: result.text,
-            isKnownWord: { !spellChecker.isTypo($0) },
-            isTypo: { spellChecker.isTypo($0) },
-            bestCorrection: { spellChecker.bestCorrection(for: $0) }
+            spellingAssessment: { self.completionSpellingAssessment(for: $0) }
         )
         if seamVerdict != .allow {
             clearSuggestion()

@@ -6,20 +6,16 @@ import XCTest
 /// continuations that surround them. Every guard must fire rarely; most of these tests are
 /// allow-cases for exactly that reason.
 final class CompletionSeamGuardTests: XCTestCase {
-    /// A stub dictionary: the listed words are known, everything else is a misspelling.
-    private func knowing(_ words: Set<String>) -> (String) -> Bool {
-        { words.contains($0.lowercased()) }
+    /// A stub dictionary: the listed words are known, everything else is an uncorrectable typo.
+    private func knowing(
+        _ words: Set<String>
+    ) -> (String) -> CompletionSeamGuard.SpellingAssessment {
+        { words.contains($0.lowercased()) ? .known : .uncorrectableTypo }
     }
 
-    private let knowsEverything: (String) -> Bool = { _ in true }
-    private let knowsNothing: (String) -> Bool = { _ in false }
-
-    private func typo(_ words: Set<String>) -> (String) -> Bool {
-        { words.contains($0.lowercased()) }
-    }
-
-    private func corrections(_ values: [String: String]) -> (String) -> String? {
-        { values[$0.lowercased()] }
+    private let knowsEverything: (String) -> CompletionSeamGuard.SpellingAssessment = { _ in .known }
+    private let knowsNothing: (String) -> CompletionSeamGuard.SpellingAssessment = {
+        _ in .uncorrectableTypo
     }
 
     // MARK: - Junk punctuation runs
@@ -29,7 +25,7 @@ final class CompletionSeamGuardTests: XCTestCase {
             CompletionSeamGuard.verdict(
                 precedingText: "Wait",
                 completion: " what....",
-                isKnownWord: knowsEverything
+                spellingAssessment: knowsEverything
             ),
             .junkPunctuationRun
         )
@@ -40,7 +36,7 @@ final class CompletionSeamGuardTests: XCTestCase {
             CompletionSeamGuard.verdict(
                 precedingText: "Price: ",
                 completion: "$$$$",
-                isKnownWord: knowsEverything
+                spellingAssessment: knowsEverything
             ),
             .junkPunctuationRun
         )
@@ -52,7 +48,7 @@ final class CompletionSeamGuardTests: XCTestCase {
             CompletionSeamGuard.verdict(
                 precedingText: "Well",
                 completion: "... maybe",
-                isKnownWord: knowsEverything
+                spellingAssessment: knowsEverything
             ),
             .allow
         )
@@ -65,7 +61,7 @@ final class CompletionSeamGuardTests: XCTestCase {
             CompletionSeamGuard.verdict(
                 precedingText: "Hello.",
                 completion: "....",
-                isKnownWord: knowsEverything
+                spellingAssessment: knowsEverything
             ),
             .junkPunctuationRun
         )
@@ -88,7 +84,7 @@ final class CompletionSeamGuardTests: XCTestCase {
             CompletionSeamGuard.verdict(
                 precedingText: "----",
                 completion: "------",
-                isKnownWord: knowsEverything
+                spellingAssessment: knowsEverything
             ),
             .allow
         )
@@ -99,7 +95,7 @@ final class CompletionSeamGuardTests: XCTestCase {
             CompletionSeamGuard.verdict(
                 precedingText: "----",
                 completion: " section ======",
-                isKnownWord: knowsEverything
+                spellingAssessment: knowsEverything
             ),
             .junkPunctuationRun
         )
@@ -110,7 +106,7 @@ final class CompletionSeamGuardTests: XCTestCase {
             CompletionSeamGuard.verdict(
                 precedingText: "That is so",
                 completion: " coooool",
-                isKnownWord: knowsEverything
+                spellingAssessment: knowsEverything
             ),
             .allow
         )
@@ -123,7 +119,7 @@ final class CompletionSeamGuardTests: XCTestCase {
             CompletionSeamGuard.verdict(
                 precedingText: "I am so gre",
                 completion: "atful for this",
-                isKnownWord: knowing(["great", "grateful"])
+                spellingAssessment: knowing(["great", "grateful"])
             ),
             .seamMisspelling(word: "greatful")
         )
@@ -134,7 +130,7 @@ final class CompletionSeamGuardTests: XCTestCase {
             CompletionSeamGuard.verdict(
                 precedingText: "I am so gre",
                 completion: "at to hear it",
-                isKnownWord: knowing(["great"])
+                spellingAssessment: knowing(["great"])
             ),
             .allow
         )
@@ -146,7 +142,7 @@ final class CompletionSeamGuardTests: XCTestCase {
             CompletionSeamGuard.verdict(
                 precedingText: "I am so ",
                 completion: "greatful",
-                isKnownWord: knowsNothing
+                spellingAssessment: knowsNothing
             ),
             .allow
         )
@@ -158,7 +154,7 @@ final class CompletionSeamGuardTests: XCTestCase {
             CompletionSeamGuard.verdict(
                 precedingText: "Ask Cota",
                 completion: "bby about it",
-                isKnownWord: knowsNothing
+                spellingAssessment: knowsNothing
             ),
             .allow
         )
@@ -169,7 +165,7 @@ final class CompletionSeamGuardTests: XCTestCase {
             CompletionSeamGuard.verdict(
                 precedingText: "a",
                 completion: "t the office",
-                isKnownWord: knowsNothing
+                spellingAssessment: knowsNothing
             ),
             .allow
         )
@@ -182,7 +178,7 @@ final class CompletionSeamGuardTests: XCTestCase {
             CompletionSeamGuard.verdict(
                 precedingText: "version 2",
                 completion: "024 release",
-                isKnownWord: knowsNothing
+                spellingAssessment: knowsNothing
             ),
             .allow
         )
@@ -193,7 +189,7 @@ final class CompletionSeamGuardTests: XCTestCase {
             CompletionSeamGuard.verdict(
                 precedingText: "これはとても良",
                 completion: "い天気ですね",
-                isKnownWord: knowsNothing
+                spellingAssessment: knowsNothing
             ),
             .allow
         )
@@ -204,7 +200,7 @@ final class CompletionSeamGuardTests: XCTestCase {
             CompletionSeamGuard.verdict(
                 precedingText: "Thanks again for your help",
                 completion: " with the move last weekend.",
-                isKnownWord: knowing(["with"])
+                spellingAssessment: knowing(["with"])
             ),
             .allow
         )
@@ -217,9 +213,7 @@ final class CompletionSeamGuardTests: XCTestCase {
             CompletionSeamGuard.verdict(
                 precedingText: "Je veux ",
                 completion: "ecrir plus vite",
-                isKnownWord: knowsEverything,
-                isTypo: typo(["ecrir"]),
-                bestCorrection: corrections(["ecrir": "écrire"])
+                spellingAssessment: { $0 == "ecrir" ? .correctableTypo : .known }
             ),
             .leadingWordMisspelling(word: "ecrir")
         )
@@ -232,9 +226,7 @@ final class CompletionSeamGuardTests: XCTestCase {
             CompletionSeamGuard.verdict(
                 precedingText: "Use ",
                 completion: "cotabby avec soin",
-                isKnownWord: knowsEverything,
-                isTypo: typo(["cotabby"]),
-                bestCorrection: corrections([:])
+                spellingAssessment: { $0 == "cotabby" ? .uncorrectableTypo : .known }
             ),
             .allow
         )
@@ -245,28 +237,112 @@ final class CompletionSeamGuardTests: XCTestCase {
             CompletionSeamGuard.verdict(
                 precedingText: "Ask ",
                 completion: "Cotypist about it",
-                isKnownWord: knowsEverything,
-                isTypo: typo(["cotypist"]),
-                bestCorrection: corrections(["cotypist": "copyist"])
+                spellingAssessment: { _ in
+                    XCTFail("capitalized leading words must not reach the spell checker")
+                    return .correctableTypo
+                }
             ),
             .allow
         )
     }
 
-    func testMidWordCompletionDoesNotRunLeadingWordChecks() {
+    func testMidWordCompletionOnlyAssessesTheJoinedSeamWord() {
         XCTAssertEqual(
             CompletionSeamGuard.verdict(
                 precedingText: "Je veux ecr",
                 completion: "irregular",
-                isKnownWord: knowsEverything,
-                isTypo: { _ in
-                    XCTFail("leading-word typo check must not run for a mid-word completion")
-                    return true
-                },
-                bestCorrection: { _ in
-                    XCTFail("leading-word correction must not run for a mid-word completion")
-                    return "écrire"
+                spellingAssessment: { word in
+                    XCTAssertEqual(word, "ecrirregular")
+                    return .known
                 }
+            ),
+            .allow
+        )
+    }
+
+    func testQuotedLeadingWordIsSuppressed() {
+        XCTAssertEqual(
+            CompletionSeamGuard.verdict(
+                precedingText: "Il répond ",
+                completion: "“ecrir” plus vite",
+                spellingAssessment: { $0 == "ecrir" ? .correctableTypo : .known }
+            ),
+            .leadingWordMisspelling(word: "ecrir")
+        )
+    }
+
+    func testParenthesizedLeadingWordAfterTextIsSuppressed() {
+        XCTAssertEqual(
+            CompletionSeamGuard.verdict(
+                precedingText: "Il répond",
+                completion: ": (ecrir) plus vite",
+                spellingAssessment: { $0 == "ecrir" ? .correctableTypo : .known }
+            ),
+            .leadingWordMisspelling(word: "ecrir")
+        )
+    }
+
+    func testContractionIsAssessedAsOneWord() {
+        XCTAssertEqual(
+            CompletionSeamGuard.verdict(
+                precedingText: "It ",
+                completion: "doesn't matter",
+                spellingAssessment: { word in
+                    XCTAssertEqual(word, "doesn't")
+                    return .known
+                }
+            ),
+            .allow
+        )
+    }
+
+    // MARK: - Streamed leading words
+
+    func testStreamedLeadingWordWaitsUntilItsBoundaryArrives() {
+        XCTAssertEqual(
+            CompletionSeamGuard.streamedLeadingWordVerdict(
+                precedingText: "Je veux ",
+                completion: "ecrir",
+                spellingAssessment: { _ in
+                    XCTFail("an incomplete streamed word must not reach the spell checker")
+                    return .known
+                }
+            ),
+            .wait
+        )
+    }
+
+    func testStreamedContractionWaitsAfterADanglingApostrophe() {
+        XCTAssertEqual(
+            CompletionSeamGuard.streamedLeadingWordVerdict(
+                precedingText: "It ",
+                completion: "does'",
+                spellingAssessment: { _ in
+                    XCTFail("a dangling apostrophe may still continue the streamed word")
+                    return .known
+                }
+            ),
+            .wait
+        )
+    }
+
+    func testStreamedCorrectableLeadingWordIsSuppressedAtItsBoundary() {
+        XCTAssertEqual(
+            CompletionSeamGuard.streamedLeadingWordVerdict(
+                precedingText: "Je veux ",
+                completion: "ecrir ",
+                spellingAssessment: { $0 == "ecrir" ? .correctableTypo : .known }
+            ),
+            .suppress
+        )
+    }
+
+    func testStreamedKnownLeadingWordIsAllowedAtItsBoundary() {
+        XCTAssertEqual(
+            CompletionSeamGuard.streamedLeadingWordVerdict(
+                precedingText: "Je veux ",
+                completion: "écrire ",
+                spellingAssessment: { $0 == "écrire" ? .known : .correctableTypo }
             ),
             .allow
         )

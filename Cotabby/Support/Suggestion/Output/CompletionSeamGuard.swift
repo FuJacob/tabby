@@ -1,9 +1,8 @@
 import Foundation
 
-/// Post-generation guard for the two classic visible failures at the caret seam: junk punctuation
-/// runs ("....", "$$$$") and mid-word splices that turn the word being typed into a misspelling
-/// ("gre" + "atful"). Showing nothing beats showing either, and both checks are pure string work
-/// on a single short completion, so the guard costs microseconds once per generation.
+/// Post-generation guard for visible output failures: junk punctuation runs ("....", "$$$$"),
+/// mid-word splices that misspell the joined word ("gre" + "atful"), and correctable misspellings
+/// in the first generated word. Showing nothing beats presenting any of these as an insertion.
 ///
 /// Both rules are deliberately narrow so they fire rarely:
 ///
@@ -21,11 +20,29 @@ import Foundation
 /// short words (under four letters), words with digits, and CJK text (no space-delimited word
 /// boundaries, and the dictionaries do not cover it).
 nonisolated enum CompletionSeamGuard {
+    /// One explicit spelling result keeps callers from supplying contradictory combinations such
+    /// as "typo without a correction callback". The guard only needs to distinguish actionable
+    /// typos from unknown-but-uncorrectable vocabulary at a leading-word boundary.
+    enum SpellingAssessment: Equatable {
+        case known
+        case uncorrectableTypo
+        case correctableTypo
+    }
+
     enum Verdict: Equatable {
         case allow
         case junkPunctuationRun
         case seamMisspelling(word: String)
         case leadingWordMisspelling(word: String)
+    }
+
+    /// Streaming must not expose the first generated word until it is complete enough to assess.
+    /// Once this resolves to allow or suppress, the coordinator caches it for the generation so
+    /// `NSSpellChecker` is never called at token cadence.
+    enum StreamedLeadingWordVerdict: Equatable {
+        case wait
+        case allow
+        case suppress
     }
 
     /// Identical punctuation/symbol characters in a row that count as junk when freshly introduced.
@@ -34,23 +51,19 @@ nonisolated enum CompletionSeamGuard {
     /// Joined seam words shorter than this are too ambiguous to judge ("a" + "t").
     private static let minimumSeamWordLength = 4
 
-    /// Streaming-path variant: only the pure junk-run rule. Partials drain at token cadence, so
-    /// the spell-lookup half of the guard (an XPC round trip) stays off that path; the full
-    /// verdict still gates the final result, which authoritatively replaces whatever streamed.
+    /// Cheap streaming-path junk rule. The separate leading-word streaming verdict buffers until a
+    /// complete word exists, then performs and caches exactly one spelling decision.
     static func allowsStreamedPartial(precedingText: String, completion: String) -> Bool {
         !introducesJunkPunctuationRun(precedingText: precedingText, completion: completion)
     }
 
-    /// The spell-checking closures are injected so the pure rule stays testable and the caller picks
-    /// the backend. `isKnownWord` covers the mid-word seam; the optional typo/correction pair enables
-    /// the conservative leading-word check without forcing every existing caller to pay a spell
-    /// lookup.
+    /// The spelling assessment is injected so the pure rule stays testable and the caller picks the
+    /// backend. A single result describes the whole invariant: mid-word seams reject any typo,
+    /// while newly generated words reject only correctable typos.
     static func verdict(
         precedingText: String,
         completion: String,
-        isKnownWord: (String) -> Bool,
-        isTypo: ((String) -> Bool)? = nil,
-        bestCorrection: ((String) -> String?)? = nil
+        spellingAssessment: (String) -> SpellingAssessment
     ) -> Verdict {
         if introducesJunkPunctuationRun(precedingText: precedingText, completion: completion) {
             return .junkPunctuationRun
@@ -59,19 +72,39 @@ nonisolated enum CompletionSeamGuard {
         if let seamWord = misspellingCandidateSeamWord(
             precedingText: precedingText,
             completion: completion
-        ), !isKnownWord(seamWord) {
+        ), spellingAssessment(seamWord) != .known {
             return .seamMisspelling(word: seamWord)
         }
 
-        if let leadingWord = misspellingCandidateLeadingWord(
+        if case let .candidate(leadingWord, _) = leadingWordProbe(
             precedingText: precedingText,
             completion: completion
-        ), let isTypo, isTypo(leadingWord), let bestCorrection,
-           bestCorrection(leadingWord) != nil {
+        ), spellingAssessment(leadingWord) == .correctableTypo {
             return .leadingWordMisspelling(word: leadingWord)
         }
 
         return .allow
+    }
+
+    /// Leading-word half of the streaming guard. Incomplete first words remain buffered; testing a
+    /// prefix such as `ecr` would create false positives and repeating the lookup on every token
+    /// would put an AppKit/XPC call on the hot streaming path.
+    static func streamedLeadingWordVerdict(
+        precedingText: String,
+        completion: String,
+        spellingAssessment: (String) -> SpellingAssessment
+    ) -> StreamedLeadingWordVerdict {
+        switch leadingWordProbe(precedingText: precedingText, completion: completion) {
+        case .notApplicable:
+            return .allow
+        case .incomplete:
+            return .wait
+        case let .candidate(word, isComplete):
+            guard isComplete else {
+                return .wait
+            }
+            return spellingAssessment(word) == .correctableTypo ? .suppress : .allow
+        }
     }
 
     // MARK: - Junk punctuation runs
@@ -135,33 +168,78 @@ nonisolated enum CompletionSeamGuard {
         return seamWord
     }
 
-    /// The first complete word in a completion that begins at a word boundary, or nil when the
-    /// completion is continuing the word at the caret. Only the leading word is checked: Cotabby
-    /// accepts suggestions word-by-word, so later words get their own opportunity to pass through
-    /// this guard after the user accepts the first chunk.
-    private static func misspellingCandidateLeadingWord(
+    private enum LeadingWordProbe {
+        case notApplicable
+        case incomplete
+        case candidate(word: String, isComplete: Bool)
+    }
+
+    /// Finds the first lexical word after boundary whitespace or punctuation. Apostrophes and
+    /// hyphens between letters remain part of the word (`doesn't`, `state-of-the-art`) so the spell
+    /// checker sees the same natural-language token the user sees.
+    private static func leadingWordProbe(
         precedingText: String,
         completion: String
-    ) -> String? {
-        // A letter immediately following a letter belongs to the mid-word seam rule above. A
-        // leading space makes it a new word even when the preceding text ends in a letter.
-        guard precedingText.last?.isLetter != true || completion.first?.isWhitespace == true else {
-            return nil
+    ) -> LeadingWordProbe {
+        guard !completion.isEmpty else {
+            return .incomplete
         }
 
-        let afterWhitespace = completion.drop(while: { $0.isWhitespace })
-        guard let firstCharacter = afterWhitespace.first, firstCharacter.isLetter else {
-            return nil
+        guard let wordStart = completion.firstIndex(where: { $0.isLetter }) else {
+            // Whitespace and opening punctuation may arrive before the first streamed word. Digits
+            // make the token code/version-like, so the conservative spelling rule does not apply.
+            return completion.allSatisfy({ $0.isWhitespace || $0.isPunctuation || $0.isSymbol })
+                ? .incomplete
+                : .notApplicable
         }
 
-        let word = String(afterWhitespace.prefix(while: { $0.isLetter }))
-        guard word.count >= minimumSeamWordLength,
-              firstCharacter.isLowercase,
-              !word.dropFirst().contains(where: { $0.isUppercase }),
+        let boundaryPrefix = completion[..<wordStart]
+        guard !boundaryPrefix.contains(where: { $0.isNumber }) else {
+            return .notApplicable
+        }
+
+        // A bare apostrophe or hyphen can continue the word before the caret (`don` + `'t`). Any
+        // other prefix character establishes a real boundary before the generated word.
+        if precedingText.last?.isLetter == true,
+           boundaryPrefix.allSatisfy({ isWordConnector($0) }) {
+            return .notApplicable
+        }
+
+        var wordEnd = wordStart
+        var endsInDanglingConnector = false
+        while wordEnd < completion.endIndex {
+            let character = completion[wordEnd]
+            if character.isLetter {
+                wordEnd = completion.index(after: wordEnd)
+                continue
+            }
+            let next = completion.index(after: wordEnd)
+            if isWordConnector(character), next < completion.endIndex,
+               completion[next].isLetter {
+                wordEnd = next
+                continue
+            }
+            endsInDanglingConnector = isWordConnector(character)
+                && next == completion.endIndex
+            break
+        }
+
+        let word = String(completion[wordStart..<wordEnd])
+        let letters = word.filter(\.isLetter)
+        let isComplete = wordEnd < completion.endIndex && !endsInDanglingConnector
+        guard letters.first?.isLowercase == true,
+              !letters.dropFirst().contains(where: { $0.isUppercase }),
               !containsCJK(word) else {
-            return nil
+            return .notApplicable
         }
-        return word
+        guard letters.count >= minimumSeamWordLength else {
+            return isComplete ? .notApplicable : .incomplete
+        }
+        return .candidate(word: word, isComplete: isComplete)
+    }
+
+    private static func isWordConnector(_ character: Character) -> Bool {
+        character == "'" || character == "’" || character == "-"
     }
 
     private static func trailingRunLength(of text: String, character: Character) -> Int {
