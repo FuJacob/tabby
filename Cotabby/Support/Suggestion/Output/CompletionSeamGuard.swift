@@ -198,6 +198,15 @@ nonisolated enum CompletionSeamGuard {
             return .notApplicable
         }
 
+        // A digit anywhere in the same whitespace-delimited token makes it code/version-like. Scan
+        // the whole token before extracting its leading letter run so `ecrir2` is not misread as the
+        // correctable natural-language word `ecrir`.
+        let tokenEnd = completion[wordStart...].firstIndex(where: { $0.isWhitespace })
+            ?? completion.endIndex
+        guard !completion[wordStart..<tokenEnd].contains(where: { $0.isNumber }) else {
+            return .notApplicable
+        }
+
         // A bare apostrophe or hyphen can continue the word before the caret (`don` + `'t`). Any
         // other prefix character establishes a real boundary before the generated word.
         if precedingText.last?.isLetter == true,
@@ -238,6 +247,7 @@ nonisolated enum CompletionSeamGuard {
         return .candidate(word: word, isComplete: isComplete)
     }
 
+    /// Apostrophes and hyphens bind adjacent letter runs into one natural-language token.
     private static func isWordConnector(_ character: Character) -> Bool {
         character == "'" || character == "’" || character == "-"
     }

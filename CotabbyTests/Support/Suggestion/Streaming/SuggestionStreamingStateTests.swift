@@ -65,6 +65,7 @@ final class SuggestionStreamingStateTests: XCTestCase {
         XCTAssertFalse(state.canRender(" wild"))
     }
 
+    /// A terminal first-word verdict remains reusable until the next generation resets the state.
     func test_leadingWordGateCachesATerminalDecisionForTheGeneration() {
         var state = SuggestionStreamingState()
 

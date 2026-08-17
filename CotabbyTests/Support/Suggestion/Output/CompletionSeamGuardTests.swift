@@ -208,6 +208,7 @@ final class CompletionSeamGuardTests: XCTestCase {
 
     // MARK: - Leading-word misspellings
 
+    /// A lowercase generated typo is hidden only when the checker has an actionable correction.
     func testMisspelledLeadingWordWithCorrectionIsSuppressed() {
         XCTAssertEqual(
             CompletionSeamGuard.verdict(
@@ -219,6 +220,7 @@ final class CompletionSeamGuardTests: XCTestCase {
         )
     }
 
+    /// Unknown vocabulary remains visible when the checker cannot offer a replacement.
     func testLeadingWordWithoutCorrectionIsAllowed() {
         // An unknown name or domain term should not disappear merely because the native checker has
         // no suggestion for it.
@@ -232,6 +234,7 @@ final class CompletionSeamGuardTests: XCTestCase {
         )
     }
 
+    /// Capitalized names bypass spelling entirely to avoid dictionary-driven false positives.
     func testCapitalizedLeadingWordIsAllowed() {
         XCTAssertEqual(
             CompletionSeamGuard.verdict(
@@ -246,6 +249,7 @@ final class CompletionSeamGuardTests: XCTestCase {
         )
     }
 
+    /// Mid-word completions assess the joined word rather than reclassifying the generated suffix.
     func testMidWordCompletionOnlyAssessesTheJoinedSeamWord() {
         XCTAssertEqual(
             CompletionSeamGuard.verdict(
@@ -260,6 +264,7 @@ final class CompletionSeamGuardTests: XCTestCase {
         )
     }
 
+    /// Opening quotation marks still leave the following letters at a valid word boundary.
     func testQuotedLeadingWordIsSuppressed() {
         XCTAssertEqual(
             CompletionSeamGuard.verdict(
@@ -271,6 +276,7 @@ final class CompletionSeamGuardTests: XCTestCase {
         )
     }
 
+    /// Punctuation introduced after existing text cannot hide the first generated typo.
     func testParenthesizedLeadingWordAfterTextIsSuppressed() {
         XCTAssertEqual(
             CompletionSeamGuard.verdict(
@@ -282,6 +288,7 @@ final class CompletionSeamGuardTests: XCTestCase {
         )
     }
 
+    /// Interior apostrophes stay attached so a contraction is never checked as a truncated stem.
     func testContractionIsAssessedAsOneWord() {
         XCTAssertEqual(
             CompletionSeamGuard.verdict(
@@ -296,8 +303,24 @@ final class CompletionSeamGuardTests: XCTestCase {
         )
     }
 
+    /// A digit makes the whole leading token code/version-like, including its letter prefix.
+    func testLetterAndDigitLeadingTokenIsAllowedWithoutSpellLookup() {
+        XCTAssertEqual(
+            CompletionSeamGuard.verdict(
+                precedingText: "Use ",
+                completion: "ecrir2 here",
+                spellingAssessment: { _ in
+                    XCTFail("letter-and-digit tokens must bypass spelling")
+                    return .correctableTypo
+                }
+            ),
+            .allow
+        )
+    }
+
     // MARK: - Streamed leading words
 
+    /// Streaming buffers a lowercase prefix because checking it before its boundary is unreliable.
     func testStreamedLeadingWordWaitsUntilItsBoundaryArrives() {
         XCTAssertEqual(
             CompletionSeamGuard.streamedLeadingWordVerdict(
@@ -312,6 +335,7 @@ final class CompletionSeamGuardTests: XCTestCase {
         )
     }
 
+    /// A trailing apostrophe may still join the next letters, so it cannot finalize the word.
     func testStreamedContractionWaitsAfterADanglingApostrophe() {
         XCTAssertEqual(
             CompletionSeamGuard.streamedLeadingWordVerdict(
@@ -326,6 +350,7 @@ final class CompletionSeamGuardTests: XCTestCase {
         )
     }
 
+    /// Once its boundary arrives, a correctable streamed typo is suppressed before presentation.
     func testStreamedCorrectableLeadingWordIsSuppressedAtItsBoundary() {
         XCTAssertEqual(
             CompletionSeamGuard.streamedLeadingWordVerdict(
@@ -337,12 +362,28 @@ final class CompletionSeamGuardTests: XCTestCase {
         )
     }
 
+    /// A known streamed word becomes presentable as soon as its boundary makes it complete.
     func testStreamedKnownLeadingWordIsAllowedAtItsBoundary() {
         XCTAssertEqual(
             CompletionSeamGuard.streamedLeadingWordVerdict(
                 precedingText: "Je veux ",
                 completion: "écrire ",
                 spellingAssessment: { $0 == "écrire" ? .known : .correctableTypo }
+            ),
+            .allow
+        )
+    }
+
+    /// Streaming also exempts a completed letter-and-digit token without consulting spelling.
+    func testStreamedLetterAndDigitLeadingTokenIsAllowedWithoutSpellLookup() {
+        XCTAssertEqual(
+            CompletionSeamGuard.streamedLeadingWordVerdict(
+                precedingText: "Use ",
+                completion: "ecrir2 ",
+                spellingAssessment: { _ in
+                    XCTFail("letter-and-digit tokens must bypass streamed spelling")
+                    return .correctableTypo
+                }
             ),
             .allow
         )
