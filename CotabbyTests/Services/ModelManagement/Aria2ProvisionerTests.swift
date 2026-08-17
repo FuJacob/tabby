@@ -27,10 +27,11 @@ final class Aria2ProvisionerTests: XCTestCase {
     }
 
     func test_provisioner_returnsExistingURLIfAvailable() async throws {
-        let provisioner = Aria2Provisioner.shared
-        if Aria2Locator.isAvailable {
-            let url = try await provisioner.provisionIfNeeded()
-            XCTAssertTrue(FileManager.default.isExecutableFile(atPath: url.path))
-        }
+        let stub = StubExecutableFileManager()
+        stub.executablePaths = ["/opt/homebrew/bin/aria2c"]
+        let provisioner = Aria2Provisioner(fileManager: stub)
+
+        let url = try await provisioner.provisionIfNeeded()
+        XCTAssertEqual(url.path, "/opt/homebrew/bin/aria2c")
     }
 }

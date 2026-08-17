@@ -172,7 +172,7 @@ extension FoundationModelAvailabilityService {
 
         if isEligibleOS {
             return UnsupportedAvailabilityProvider(
-                reason: "Apple Foundation Models framework was not found on this macOS \(version.majorVersion).\(version.minorVersion) system. Use Open Source on this Mac."
+                reason: "Apple Foundation Models framework is unavailable in this build on macOS \(version.majorVersion).\(version.minorVersion). Use Open Source on this Mac."
             )
         } else {
             return UnsupportedAvailabilityProvider(

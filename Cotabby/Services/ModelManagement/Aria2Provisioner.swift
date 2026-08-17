@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Logging
 
@@ -30,6 +31,12 @@ public enum Aria2ProvisioningError: LocalizedError, Equatable {
     }
 }
 
+/// Bottle metadata containing download URL and expected SHA-256 checksum.
+struct Aria2BottleMetadata: Sendable {
+    let downloadURL: URL
+    let expectedSHA256: String
+}
+
 /// File overview:
 /// Automatically downloads and provisions the `aria2c` standalone binary into
 /// Cotabby's Application Support folder if it is not present on the system.
@@ -49,14 +56,20 @@ public final class Aria2Provisioner: @unchecked Sendable {
     private let lock = NSLock()
     private var activeTask: Task<URL, Error>?
 
-    /// Direct prebuilt binary URLs by architecture (ARM64 Apple Silicon / Intel x86_64).
-    private static var bottleDownloadURL: URL {
+    /// Direct prebuilt binary bottle metadata by architecture (ARM64 Apple Silicon / Intel x86_64).
+    static var bottleMetadata: Aria2BottleMetadata {
         #if arch(arm64)
-        // macOS Apple Silicon universal/arm64 bottle
-        return URL(string: "https://ghcr.io/v2/homebrew/core/aria2/blobs/sha256:8815b6b79395235863349628dc0d753bbee9069e99d94257b7646ffd85615623")!
+        // macOS Apple Silicon arm64 bottle (universal / arm64_sequoia / arm64_sonoma)
+        return Aria2BottleMetadata(
+            downloadURL: URL(string: "https://ghcr.io/v2/homebrew/core/aria2/blobs/sha256:8815b6b79395235863349628dc0d753bbee9069e99d94257b7646ffd85615623")!,
+            expectedSHA256: "8815b6b79395235863349628dc0d753bbee9069e99d94257b7646ffd85615623"
+        )
         #else
         // macOS Intel x86_64 bottle
-        return URL(string: "https://ghcr.io/v2/homebrew/core/aria2/blobs/sha256:b88e53b1c54d82af91dea90551fc114b7c02149972d536b9d55a33b12f9a9fd5")!
+        return Aria2BottleMetadata(
+            downloadURL: URL(string: "https://ghcr.io/v2/homebrew/core/aria2/blobs/sha256:b88e53b1c54d82af91dea90551fc114b7c02149972d536b9d55a33b12f9a9fd5")!,
+            expectedSHA256: "b88e53b1c54d82af91dea90551fc114b7c02149972d536b9d55a33b12f9a9fd5"
+        )
         #endif
     }
 
@@ -124,44 +137,73 @@ public final class Aria2Provisioner: @unchecked Sendable {
         defer { try? fileManager.removeItem(at: tempDir) }
 
         let archiveURL = tempDir.appendingPathComponent("aria2_package.tar.gz")
+        let metadata = Self.bottleMetadata
 
         // Fetch auth token for GHCR package registry
         let token = try await fetchGHCRToken()
-        var request = URLRequest(url: Self.bottleDownloadURL)
+        var request = URLRequest(url: metadata.downloadURL)
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 
+        progressHandler?(0.0)
         let (tempDownloadedURL, response) = try await URLSession.shared.download(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+            try? fileManager.removeItem(at: tempDownloadedURL)
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
             throw Aria2ProvisioningError.downloadFailed("HTTP \(code)")
         }
 
         try fileManager.moveItem(at: tempDownloadedURL, to: archiveURL)
+        progressHandler?(1.0)
 
-        // 3. Extract the aria2c executable from the archive using tar
+        // 3. Verify archive SHA-256 checksum
+        let archiveData = try Data(contentsOf: archiveURL)
+        let computedSHA = SHA256.hash(data: archiveData).map { String(format: "%02x", $0) }.joined()
+        if computedSHA.lowercased() != metadata.expectedSHA256.lowercased() {
+            throw Aria2ProvisioningError.downloadFailed(
+                "SHA256 checksum mismatch: expected \(metadata.expectedSHA256), got \(computedSHA)"
+            )
+        }
+
+        // 4. Extract the aria2c executable from the archive using tar
         let extractedDir = tempDir.appendingPathComponent("extracted")
         try fileManager.createDirectory(at: extractedDir, withIntermediateDirectories: true)
 
         let tarProcess = Process()
         tarProcess.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
         tarProcess.arguments = ["-xzf", archiveURL.path, "-C", extractedDir.path]
+        tarProcess.standardInput = Pipe()
+        tarProcess.standardOutput = Pipe()
+        tarProcess.standardError = Pipe()
 
-        try tarProcess.run()
-        tarProcess.waitUntilExit()
-
-        guard tarProcess.terminationStatus == 0 else {
-            throw Aria2ProvisioningError.extractionFailed("tar exit code \(tarProcess.terminationStatus)")
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            tarProcess.terminationHandler = { proc in
+                if proc.terminationStatus == 0 {
+                    continuation.resume()
+                } else {
+                    continuation.resume(
+                        throwing: Aria2ProvisioningError.extractionFailed("tar exit code \(proc.terminationStatus)")
+                    )
+                }
+            }
+            do {
+                try tarProcess.run()
+            } catch {
+                continuation.resume(throwing: error)
+            }
         }
 
-        // 4. Find the aria2c binary in the extracted contents
+        // 5. Find the aria2c binary in the extracted contents
         guard let discoveredBinary = findBinaryInDirectory(named: "aria2c", directory: extractedDir) else {
             throw Aria2ProvisioningError.invalidBinary
         }
 
-        // 5. Promote binary to Cotabby bin directory with executable permissions
+        // 6. Validate Mach-O binary compatibility
+        try validateMachOBinary(at: discoveredBinary)
+
+        // 7. Promote binary to Cotabby bin directory with executable permissions
         if fileManager.fileExists(atPath: destinationURL.path) {
             try? fileManager.removeItem(at: destinationURL)
         }
@@ -175,6 +217,24 @@ public final class Aria2Provisioner: @unchecked Sendable {
 
         CotabbyLogger.runtime.info("Successfully provisioned aria2c to \(destinationURL.path)")
         return destinationURL
+    }
+
+    private func validateMachOBinary(at url: URL) throws {
+        guard let handle = try? FileHandle(forReadingFrom: url),
+              let header = try? handle.read(upToCount: 4), header.count >= 4 else {
+            throw Aria2ProvisioningError.invalidBinary
+        }
+
+        let magic = header.withUnsafeBytes { $0.load(as: UInt32.self) }
+        // Valid Mach-O 32-bit, 64-bit, universal/FAT, and byte-swapped magics
+        let validMagics: Set<UInt32> = [
+            0xfeedface, 0xfeedfacf, 0xcafebabe, 0xbebafeca,
+            0xcefaedfe, 0xcffaedfe
+        ]
+
+        guard validMagics.contains(magic) else {
+            throw Aria2ProvisioningError.invalidBinary
+        }
     }
 
     private func fetchGHCRToken() async throws -> String? {
@@ -203,9 +263,20 @@ public final class Aria2Provisioner: @unchecked Sendable {
         let process = Process()
         process.executableURL = brewURL
         process.arguments = ["install", "aria2"]
-        try process.run()
-        process.waitUntilExit()
-        return process.terminationStatus == 0
+        process.standardInput = Pipe()
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+
+        return try await withCheckedThrowingContinuation { continuation in
+            process.terminationHandler = { proc in
+                continuation.resume(returning: proc.terminationStatus == 0)
+            }
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
     }
 
     private func findBinaryInDirectory(named binaryName: String, directory: URL) -> URL? {

@@ -593,6 +593,7 @@ private final class ModelDownloadSessionDelegate: NSObject, URLSessionDownloadDe
 
     private let progressHandler: @Sendable (Double?) -> Void
     private let resumeDataHandler: (@Sendable (Data) -> Void)?
+    private let lock = NSLock()
     private var continuation: CheckedContinuation<DownloadResult, Error>?
     private var downloadedFileURL: URL?
     private var response: URLResponse?
@@ -600,6 +601,7 @@ private final class ModelDownloadSessionDelegate: NSObject, URLSessionDownloadDe
     private var activeDownloadTask: URLSessionDownloadTask?
     private var finishError: Error?
     private var isUserPaused = false
+    private var isUserCancelled = false
 
     init(
         progressHandler: @escaping @Sendable (Double?) -> Void,
@@ -616,6 +618,18 @@ private final class ModelDownloadSessionDelegate: NSObject, URLSessionDownloadDe
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
+                self.lock.lock()
+                if self.isUserCancelled {
+                    self.lock.unlock()
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                if self.isUserPaused {
+                    self.lock.unlock()
+                    continuation.resume(throwing: Aria2DownloadError.paused)
+                    return
+                }
+
                 self.continuation = continuation
                 let task: URLSessionDownloadTask
                 if let resumeData {
@@ -624,24 +638,34 @@ private final class ModelDownloadSessionDelegate: NSObject, URLSessionDownloadDe
                     task = session.downloadTask(with: url)
                 }
                 self.activeDownloadTask = task
+                self.lock.unlock()
                 task.resume()
             }
         } onCancel: { [weak self] in
-            self?.activeDownloadTask?.cancel()
+            self?.cancel()
         }
     }
 
     func pause() {
+        lock.lock()
         isUserPaused = true
-        activeDownloadTask?.cancel(byProducingResumeData: { [weak self] resumeData in
+        let task = activeDownloadTask
+        lock.unlock()
+
+        task?.cancel(byProducingResumeData: { [weak self] resumeData in
             guard let resumeData else { return }
             self?.resumeDataHandler?(resumeData)
         })
     }
 
     func cancel() {
+        lock.lock()
         isUserPaused = false
-        activeDownloadTask?.cancel()
+        isUserCancelled = true
+        let task = activeDownloadTask
+        lock.unlock()
+
+        task?.cancel()
     }
 
     func urlSession(
@@ -667,21 +691,37 @@ private final class ModelDownloadSessionDelegate: NSObject, URLSessionDownloadDe
         didFinishDownloadingTo location: URL
     ) {
         do {
-            downloadedFileURL = try DownloadFileRescuer.rescue(temporaryFileAt: location)
+            let rescued = try DownloadFileRescuer.rescue(temporaryFileAt: location)
+            lock.lock()
+            downloadedFileURL = rescued
+            lock.unlock()
         } catch {
+            lock.lock()
             finishError = error
+            lock.unlock()
         }
+        lock.lock()
         response = downloadTask.response
+        lock.unlock()
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock()
         guard !hasCompleted else {
+            lock.unlock()
             return
         }
         hasCompleted = true
+        let cont = continuation
+        continuation = nil
+        let paused = isUserPaused
+        let cancelled = isUserCancelled
+        let fileURL = downloadedFileURL
+        let resp = response
+        let failure = error ?? finishError
+        lock.unlock()
 
         defer {
-            continuation = nil
             session.finishTasksAndInvalidate()
         }
 
@@ -689,26 +729,33 @@ private final class ModelDownloadSessionDelegate: NSObject, URLSessionDownloadDe
             resumeDataHandler?(resumeData)
         }
 
-        if isUserPaused {
-            continuation?.resume(throwing: Aria2DownloadError.paused)
+        if paused {
+            cont?.resume(throwing: Aria2DownloadError.paused)
             return
         }
 
-        if let failure = error ?? finishError {
-            if let holdingURL = downloadedFileURL {
-                DownloadFileRescuer.cleanup(holdingFileAt: holdingURL)
-                downloadedFileURL = nil
+        if cancelled || (error as? URLError)?.code == .cancelled {
+            if let fileURL {
+                DownloadFileRescuer.cleanup(holdingFileAt: fileURL)
             }
-            continuation?.resume(throwing: failure)
+            cont?.resume(throwing: CancellationError())
             return
         }
 
-        guard let downloadedFileURL, let response else {
-            continuation?.resume(throwing: URLError(.badServerResponse))
+        if let failure {
+            if let fileURL {
+                DownloadFileRescuer.cleanup(holdingFileAt: fileURL)
+            }
+            cont?.resume(throwing: failure)
             return
         }
 
-        continuation?.resume(
-            returning: DownloadResult(temporaryURL: downloadedFileURL, response: response))
+        guard let fileURL, let resp else {
+            cont?.resume(throwing: URLError(.badServerResponse))
+            return
+        }
+
+        cont?.resume(
+            returning: DownloadResult(temporaryURL: fileURL, response: resp))
     }
 }

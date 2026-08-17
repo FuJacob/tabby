@@ -61,9 +61,10 @@ public final class Aria2DownloadService: @unchecked Sendable {
         from url: URL,
         filename: String,
         stagingDirectory: URL,
-        executableURL: URL? = nil
+        executableURL: URL? = nil,
+        locator: () -> URL? = { Aria2Locator.executableURL() }
     ) async throws -> Aria2DownloadResult {
-        guard let aria2Executable = executableURL ?? Aria2Locator.executableURL() else {
+        guard let aria2Executable = executableURL ?? locator() else {
             throw Aria2DownloadError.executableNotFound
         }
 
@@ -178,14 +179,25 @@ public final class Aria2DownloadService: @unchecked Sendable {
                 }
 
                 self.lock.lock()
+                if self.isUserCancelled {
+                    self.lock.unlock()
+                    continuation.resume(throwing: Aria2DownloadError.cancelled)
+                    return
+                }
+                if self.isUserPaused {
+                    self.lock.unlock()
+                    continuation.resume(throwing: Aria2DownloadError.paused)
+                    return
+                }
                 self.process = proc
-                self.isUserPaused = false
-                self.isUserCancelled = false
                 self.lock.unlock()
 
                 do {
                     try proc.run()
                 } catch {
+                    self.lock.lock()
+                    self.process = nil
+                    self.lock.unlock()
                     continuation.resume(throwing: error)
                 }
             }
@@ -197,27 +209,25 @@ public final class Aria2DownloadService: @unchecked Sendable {
     /// Pauses the in-flight download gracefully, preserving `.aria2` metadata on disk.
     public func pause() {
         lock.lock()
-        guard let proc = process, proc.isRunning else {
-            lock.unlock()
-            return
-        }
         isUserPaused = true
+        let proc = process
         lock.unlock()
 
-        // Send SIGINT so aria2c flushes its .aria2 control file before exiting
-        proc.interrupt()
+        if let proc, proc.isRunning {
+            // Send SIGINT so aria2c flushes its .aria2 control file before exiting
+            proc.interrupt()
+        }
     }
 
     /// Cancels the in-flight download immediately.
     public func cancel() {
         lock.lock()
-        guard let proc = process, proc.isRunning else {
-            lock.unlock()
-            return
-        }
         isUserCancelled = true
+        let proc = process
         lock.unlock()
 
-        proc.terminate()
+        if let proc, proc.isRunning {
+            proc.terminate()
+        }
     }
 }
