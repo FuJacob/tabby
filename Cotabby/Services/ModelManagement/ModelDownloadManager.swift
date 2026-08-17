@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CryptoKit
 import Foundation
 import Logging
 import UniformTypeIdentifiers
@@ -39,14 +40,19 @@ enum ModelDownloadState: Equatable {
         }
     }
 
-    /// Determinate progress is only available when the server reports content length.
-    /// We surface it separately so views can choose between a linear bar and an indeterminate one.
     var progressFraction: Double? {
         switch self {
-        case .downloading(let progress, _, _), .paused(let progress):
-            guard let progress else { return nil }
+        case .downloading(let progress, _, _):
+            guard let progress else {
+                return nil
+            }
             return min(max(progress, 0), 1)
-        default:
+        case .paused(let progress):
+            guard let progress else {
+                return nil
+            }
+            return min(max(progress, 0), 1)
+        case .idle, .downloaded, .failed:
             return nil
         }
     }
@@ -84,6 +90,7 @@ final class ModelDownloadManager: ObservableObject {
     /// `refreshModelStates` does not re-walk the (recursively scanned) directories once per model.
     private var installedModelFilenames: Set<String> = []
     private var downloadTasks: [String: Task<Void, Never>] = [:]
+    private var activeModelsByFilename: [String: DownloadableRuntimeModel] = [:]
     private var activeAria2Services: [String: Aria2DownloadService] = [:]
     private var activeSessionDelegates: [String: ModelDownloadSessionDelegate] = [:]
     private var urlSessionResumeDataByFilename: [String: Data] = [:]
@@ -110,8 +117,57 @@ final class ModelDownloadManager: ObservableObject {
         return directories
     }
 
+    /// Reloads the set of search directories (e.g. after the LM Studio toggle changes in Settings).
+    /// Updates the installed-filename cache and all model states to match the new search paths.
+    func refreshSearchDirectories() {
+        runtimeSearchDirectories = Self.resolveSearchDirectories(primary: runtimeDirectoryURL)
+        refreshModelStates()
+    }
+
     var models: [DownloadableRuntimeModel] {
         RuntimeModelCatalog.downloadableModels
+    }
+
+    func state(for model: DownloadableRuntimeModel) -> ModelDownloadState {
+        modelStates[model.filename] ?? (isInstalled(model: model) ? .downloaded : .idle)
+    }
+
+    /// Re-reads installed models from all active search directories and updates `@Published` state.
+    /// Preserves in-flight `.downloading` and `.paused` states so a refresh during transfer never drops the progress bar.
+    func refreshModelStates() {
+        recomputeInstalledModelFilenames()
+
+        for model in models {
+            let currentState = modelStates[model.filename]
+            if case .downloading = currentState {
+                continue
+            }
+            if case .paused = currentState {
+                continue
+            }
+
+            if isInstalled(model: model) {
+                modelStates[model.filename] = .downloaded
+            } else if currentState == .downloaded {
+                modelStates[model.filename] = .idle
+            }
+        }
+    }
+
+    /// True when any configured directory holds a file matching `filename` or any known alias.
+    func isModelInstalled(filename: String) -> Bool {
+        isInstalled(filename: filename)
+    }
+
+    /// Returns the active downloaded model options from the primary directory.
+    func installedModelOptions() -> [RuntimeModelOption] {
+        let discovered = BundledRuntimeLocator.discoverGGUFModelURLs(in: runtimeDirectoryURL)
+        return discovered.map {
+            RuntimeModelOption(
+                filename: $0.lastPathComponent,
+                url: $0
+            )
+        }.sorted { $0.displayName < $1.displayName }
     }
 
     /// The path shown in Settings and opened by "Open Folder". This is always Cotabby's own writable
@@ -121,62 +177,32 @@ final class ModelDownloadManager: ObservableObject {
         runtimeDirectoryURL.path
     }
 
-    /// Re-reads the current search directories (including the LM Studio source when toggled) and
-    /// refreshes model states.
-    func refreshSearchDirectories() {
-        runtimeSearchDirectories = Self.resolveSearchDirectories(primary: runtimeDirectoryURL)
-        refreshModelStates()
+    /// Returns `true` only when the model lives in Cotabby's user-writable model directory.
+    func canDeleteModel(filename: String) -> Bool {
+        FileManager.default.fileExists(atPath: modelFileURL(filename: filename).path)
     }
 
-    func state(for model: DownloadableRuntimeModel) -> ModelDownloadState {
-        modelStates[model.filename] ?? .idle
-    }
+    /// Removes one model from the user-managed runtime directory.
+    func deleteModel(filename: String) {
+        let targetURL = modelFileURL(filename: filename)
 
-    func refreshModelStates() {
-        recomputeInstalledModelFilenames()
-        let catalogFilenames = Set(models.map(\.filename))
-
-        for model in models {
-            if downloadTasks[model.filename] != nil {
-                if case .downloading(let progress, let speed, let eta) = modelStates[model.filename] {
-                    modelStates[model.filename] = .downloading(progress: progress, speedFormatted: speed, etaFormatted: eta)
-                } else if case .paused(let progress) = modelStates[model.filename] {
-                    modelStates[model.filename] = .paused(progress: progress)
-                } else {
-                    modelStates[model.filename] = .downloading(progress: nil)
-                }
-            } else if case .paused(let progress) = modelStates[model.filename] {
-                modelStates[model.filename] = .paused(progress: progress)
-            } else if isInstalled(model: model) {
-                modelStates[model.filename] = .downloaded
-            } else {
-                modelStates[model.filename] = .idle
-            }
+        guard FileManager.default.fileExists(atPath: targetURL.path) else {
+            return
         }
 
-        var keysToRemove: [String] = []
-        for (filename, state) in modelStates where !catalogFilenames.contains(filename) {
-            if downloadTasks[filename] != nil {
-                continue
-            }
-            switch state {
-            case .downloading, .paused:
-                break
-            case .downloaded, .idle, .failed:
-                if isInstalled(filename: filename) {
-                    modelStates[filename] = .downloaded
-                } else {
-                    keysToRemove.append(filename)
-                }
-            }
-        }
-        for key in keysToRemove {
-            modelStates.removeValue(forKey: key)
+        do {
+            try FileManager.default.removeItem(at: targetURL)
+            recomputeInstalledModelFilenames()
+            refreshModelStates()
+            onModelDirectoryChanged?()
+        } catch {
+            CotabbyLogger.models.error("Failed to delete model \(filename): \(error.localizedDescription)")
         }
     }
 
-    func isModelInstalled(filename: String) -> Bool {
-        isInstalled(filename: filename)
+    /// Deletes a downloaded model file from the primary runtime directory.
+    func deleteModel(_ model: RuntimeModelOption) throws {
+        deleteModel(filename: model.filename)
     }
 
     func download(_ model: DownloadableRuntimeModel) {
@@ -194,6 +220,7 @@ final class ModelDownloadManager: ObservableObject {
         let initialProgress = modelStates[model.filename]?.progressFraction
         CotabbyLogger.models.info("Starting download for \(model.filename)")
         modelStates[model.filename] = .downloading(progress: initialProgress)
+        activeModelsByFilename[model.filename] = model
         let task = Task { [weak self] in
             guard let self else {
                 return
@@ -230,9 +257,12 @@ final class ModelDownloadManager: ObservableObject {
 
         urlSessionResumeDataByFilename.removeValue(forKey: filename)
 
-        // Clean up any aria2 staging directory for this model
-        let stagingDir = aria2StagingDirectoryURL(filename: filename)
-        try? FileManager.default.removeItem(at: stagingDir)
+        // Clean up any model-scoped or legacy aria2 staging directories for this model
+        if let model = activeModelsByFilename[filename] {
+            let stagingDir = aria2StagingDirectoryURL(for: model)
+            try? FileManager.default.removeItem(at: stagingDir)
+        }
+        cleanupAllAria2StagingDirectories(for: filename)
 
         if let task = downloadTasks[filename] {
             task.cancel()
@@ -249,7 +279,6 @@ final class ModelDownloadManager: ObservableObject {
                 "Failed to ensure runtime directory before opening: \(error.localizedDescription)",
                 metadata: ["directory": .string(runtimeDirectoryURL.path)]
             )
-            return
         }
 
         NSWorkspace.shared.open(runtimeDirectoryURL)
@@ -257,73 +286,56 @@ final class ModelDownloadManager: ObservableObject {
 
     func importModel() {
         let panel = NSOpenPanel()
-        panel.title = "Select a GGUF Model"
-        if let ggufType = UTType(filenameExtension: "gguf", conformingTo: .data) {
-            panel.allowedContentTypes = [ggufType]
-        }
-        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
         panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [UTType(filenameExtension: "gguf") ?? .data]
+        panel.prompt = "Import"
+        panel.message = "Choose .gguf models to import into Cotabby"
 
-        guard panel.runModal() == .OK else { return }
-
-        do {
-            try ensureRuntimeDirectoryExists()
-        } catch {
-            CotabbyLogger.models.error(
-                "Failed to ensure runtime directory before import: \(error.localizedDescription)",
-                metadata: ["directory": .string(runtimeDirectoryURL.path)]
-            )
+        guard panel.runModal() == .OK else {
             return
         }
 
-        // Copy files off the main thread so multi-gigabyte GGUFs don't freeze the UI.
         let sourceURLs = panel.urls
-        let destinationDirectory = runtimeDirectoryURL
-        Task.detached {
-            let fileManager = FileManager.default
-            for sourceURL in sourceURLs {
-                let destinationURL = destinationDirectory.appendingPathComponent(
-                    sourceURL.lastPathComponent, isDirectory: false
-                )
-                if fileManager.fileExists(atPath: destinationURL.path) { continue }
-                do {
-                    try fileManager.copyItem(at: sourceURL, to: destinationURL)
-                } catch {
-                    CotabbyLogger.models.error(
-                        "Failed to import \(sourceURL.lastPathComponent): \(error.localizedDescription)",
-                        metadata: [
-                            "source": .string(sourceURL.path),
-                            "destination": .string(destinationURL.path)
-                        ]
+        guard !sourceURLs.isEmpty else {
+            return
+        }
+
+        Task {
+            do {
+                try ensureRuntimeDirectoryExists()
+                let destinationDirectory = runtimeDirectoryURL
+                let fileManager = FileManager.default
+
+                for sourceURL in sourceURLs {
+                    let targetURL = destinationDirectory.appendingPathComponent(
+                        sourceURL.lastPathComponent,
+                        isDirectory: false
+                    )
+
+                    if fileManager.fileExists(atPath: targetURL.path) {
+                        try fileManager.removeItem(at: targetURL)
+                    }
+
+                    try fileManager.copyItem(at: sourceURL, to: targetURL)
+                    CotabbyLogger.models.info(
+                        "Imported model: \(sourceURL.lastPathComponent)",
+                        metadata: ["destination": .string(targetURL.path)]
                     )
                 }
+
+                await MainActor.run {
+                    self.recomputeInstalledModelFilenames()
+                    self.refreshModelStates()
+                    self.onModelDirectoryChanged?()
+                }
+            } catch {
+                CotabbyLogger.models.error(
+                    "Failed to import models: \(error.localizedDescription)",
+                    metadata: ["destination": .string(self.runtimeDirectoryURL.path)]
+                )
             }
-            await MainActor.run { [weak self] in
-                self?.refreshModelStates()
-                self?.onModelDirectoryChanged?()
-            }
-        }
-    }
-
-    /// Returns `true` only when the model lives in Cotabby's user-writable model directory.
-    func canDeleteModel(filename: String) -> Bool {
-        FileManager.default.fileExists(atPath: modelFileURL(filename: filename).path)
-    }
-
-    /// Removes one model from the user-managed runtime directory.
-    func deleteModel(filename: String) {
-        let targetURL = modelFileURL(filename: filename)
-
-        guard FileManager.default.fileExists(atPath: targetURL.path) else {
-            return
-        }
-
-        do {
-            try FileManager.default.removeItem(at: targetURL)
-            refreshModelStates()
-            onModelDirectoryChanged?()
-        } catch {
-            CotabbyLogger.models.error("Failed to delete model \(filename): \(error.localizedDescription)")
         }
     }
 
@@ -359,8 +371,9 @@ final class ModelDownloadManager: ObservableObject {
                 modelStates[model.filename] = .paused(progress: currentProgress)
             } else if DownloadOutcomeClassifier.isUserCancellation(error) {
                 CotabbyLogger.models.info("Download cancelled by user for \(model.filename)")
-                let stagingDir = aria2StagingDirectoryURL(filename: model.filename)
+                let stagingDir = aria2StagingDirectoryURL(for: model)
                 try? FileManager.default.removeItem(at: stagingDir)
+                urlSessionResumeDataByFilename.removeValue(forKey: model.filename)
                 modelStates[model.filename] = isInstalled(model: model) ? .downloaded : .idle
             } else {
                 CotabbyLogger.models.error("Download failed for \(model.filename): \(error.localizedDescription)")
@@ -372,7 +385,7 @@ final class ModelDownloadManager: ObservableObject {
     private func performAria2Download(_ model: DownloadableRuntimeModel) async throws {
         try ensureRuntimeDirectoryExists()
         let destinationURL = modelFileURL(filename: model.filename)
-        let stagingDir = aria2StagingDirectoryURL(filename: model.filename)
+        let stagingDir = aria2StagingDirectoryURL(for: model)
 
         let service = Aria2DownloadService { [weak self] progress in
             Task { @MainActor [weak self] in
@@ -418,12 +431,19 @@ final class ModelDownloadManager: ObservableObject {
     private func performURLSessionDownload(_ model: DownloadableRuntimeModel) async throws {
         try ensureRuntimeDirectoryExists()
         let destinationURL = modelFileURL(filename: model.filename)
-        let delegate = ModelDownloadSessionDelegate { [weak self] progress in
-            Task { @MainActor [weak self] in
-                guard let self, self.downloadTasks[model.filename] != nil else { return }
-                self.modelStates[model.filename] = .downloading(progress: progress)
+        let delegate = ModelDownloadSessionDelegate(
+            progressHandler: { [weak self] progress in
+                Task { @MainActor [weak self] in
+                    guard let self, self.downloadTasks[model.filename] != nil else { return }
+                    self.modelStates[model.filename] = .downloading(progress: progress)
+                }
+            },
+            resumeDataHandler: { [weak self] resumeData in
+                Task { @MainActor [weak self] in
+                    self?.urlSessionResumeDataByFilename[model.filename] = resumeData
+                }
             }
-        }
+        )
         activeSessionDelegates[model.filename] = delegate
 
         let resumeData = urlSessionResumeDataByFilename[model.filename]
@@ -469,17 +489,26 @@ final class ModelDownloadManager: ObservableObject {
         }
     }
 
-    /// Promotes a validated staged file into the install location. When a model already exists there,
-    /// an atomic replace is used so a crash or error mid-promotion can never destroy the existing good
-    /// model before the replacement is committed (the old delete-then-move could leave nothing
-    /// installed). `replaceItemAt` removes the staged file as part of the swap.
+    /// Atomically moves the fully-validated staging file to `destinationURL`.
+    /// Overwrites any existing target file on success; removes `stagingURL` on failure.
     private static func promoteStagedFile(
-        at stagingURL: URL, to destinationURL: URL, fileManager: FileManager
+        at stagingURL: URL,
+        to destinationURL: URL,
+        fileManager: FileManager = .default
     ) throws {
         if fileManager.fileExists(atPath: destinationURL.path) {
-            _ = try fileManager.replaceItemAt(destinationURL, withItemAt: stagingURL)
-        } else {
+            do {
+                try fileManager.removeItem(at: destinationURL)
+            } catch {
+                try? fileManager.removeItem(at: stagingURL)
+                throw error
+            }
+        }
+        do {
             try fileManager.moveItem(at: stagingURL, to: destinationURL)
+        } catch {
+            try? fileManager.removeItem(at: stagingURL)
+            throw error
         }
     }
 
@@ -488,9 +517,10 @@ final class ModelDownloadManager: ObservableObject {
             return
         }
 
-        guard (200..<300).contains(httpResponse.statusCode) else {
+        guard (200...299).contains(httpResponse.statusCode) else {
             throw LlamaRuntimeError.unavailable(
-                "Model download failed with status code \(httpResponse.statusCode).")
+                "Model download failed with status code \(httpResponse.statusCode)."
+            )
         }
     }
 
@@ -505,8 +535,33 @@ final class ModelDownloadManager: ObservableObject {
         runtimeDirectoryURL.appendingPathComponent(filename, isDirectory: false)
     }
 
-    private func aria2StagingDirectoryURL(filename: String) -> URL {
-        runtimeDirectoryURL.appendingPathComponent(".aria2-staging-\(filename)", isDirectory: true)
+    /// Resolves an isolated, URL-unique staging directory for a model download to prevent cross-repo collisions.
+    private func aria2StagingDirectoryURL(for model: DownloadableRuntimeModel) -> URL {
+        aria2StagingDirectoryURL(downloadURL: model.downloadURL, filename: model.filename)
+    }
+
+    private func aria2StagingDirectoryURL(downloadURL: URL, filename: String) -> URL {
+        let hash = SHA256.hash(data: Data(downloadURL.absoluteString.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+            .prefix(12)
+        return runtimeDirectoryURL.appendingPathComponent(".aria2-staging-\(hash)-\(filename)", isDirectory: true)
+    }
+
+    /// Removes all staging folders corresponding to `filename`.
+    private func cleanupAllAria2StagingDirectories(for filename: String) {
+        guard let enumerator = FileManager.default.enumerator(
+            at: runtimeDirectoryURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsSubdirectoryDescendants]
+        ) else { return }
+
+        for case let folderURL as URL in enumerator {
+            let folderName = folderURL.lastPathComponent
+            if folderName.hasPrefix(".aria2-staging-") && folderName.hasSuffix("-\(filename)") {
+                try? FileManager.default.removeItem(at: folderURL)
+            }
+        }
     }
 
     private func isInstalled(model: DownloadableRuntimeModel) -> Bool {
@@ -537,6 +592,7 @@ private final class ModelDownloadSessionDelegate: NSObject, URLSessionDownloadDe
     }
 
     private let progressHandler: @Sendable (Double?) -> Void
+    private let resumeDataHandler: (@Sendable (Data) -> Void)?
     private var continuation: CheckedContinuation<DownloadResult, Error>?
     private var downloadedFileURL: URL?
     private var response: URLResponse?
@@ -545,8 +601,12 @@ private final class ModelDownloadSessionDelegate: NSObject, URLSessionDownloadDe
     private var finishError: Error?
     private var isUserPaused = false
 
-    init(progressHandler: @escaping @Sendable (Double?) -> Void) {
+    init(
+        progressHandler: @escaping @Sendable (Double?) -> Void,
+        resumeDataHandler: (@Sendable (Data) -> Void)? = nil
+    ) {
         self.progressHandler = progressHandler
+        self.resumeDataHandler = resumeDataHandler
     }
 
     func download(from url: URL, resumeData: Data? = nil) async throws -> DownloadResult {
@@ -573,7 +633,10 @@ private final class ModelDownloadSessionDelegate: NSObject, URLSessionDownloadDe
 
     func pause() {
         isUserPaused = true
-        activeDownloadTask?.cancel(byProducingResumeData: { _ in })
+        activeDownloadTask?.cancel(byProducingResumeData: { [weak self] resumeData in
+            guard let resumeData else { return }
+            self?.resumeDataHandler?(resumeData)
+        })
     }
 
     func cancel() {
@@ -620,6 +683,10 @@ private final class ModelDownloadSessionDelegate: NSObject, URLSessionDownloadDe
         defer {
             continuation = nil
             session.finishTasksAndInvalidate()
+        }
+
+        if let resumeData = (error as? NSError)?.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
+            resumeDataHandler?(resumeData)
         }
 
         if isUserPaused {
