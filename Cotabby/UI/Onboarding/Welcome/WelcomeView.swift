@@ -459,7 +459,7 @@ extension WelcomeView {
     @ViewBuilder
     private var doneStepModelStatus: some View {
         switch selectedModelDownloadState {
-        case .downloading(let progress):
+        case .downloading(let progress, _, _):
             HStack(spacing: 6) {
                 ProgressView()
                     .controlSize(.small)
@@ -469,6 +469,18 @@ extension WelcomeView {
                         .foregroundStyle(.secondary)
                 } else {
                     Text("Downloading your model…")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        case .paused(let progress):
+            HStack(spacing: 6) {
+                if let progress {
+                    Text("Model download paused (\(Int((progress * 100).rounded()))%)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Model download paused")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }

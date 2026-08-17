@@ -243,7 +243,9 @@ final class RuntimeAndInputModelValueTests: XCTestCase {
         XCTAssertEqual(ModelDownloadState.downloading(progress: -0.5).progressFraction, 0)
         XCTAssertEqual(ModelDownloadState.downloading(progress: 0.42).progressFraction, 0.42)
         XCTAssertEqual(ModelDownloadState.downloading(progress: 1.5).progressFraction, 1)
+        XCTAssertEqual(ModelDownloadState.paused(progress: 0.75).progressFraction, 0.75)
         XCTAssertNil(ModelDownloadState.downloading(progress: nil).progressFraction)
+        XCTAssertNil(ModelDownloadState.paused(progress: nil).progressFraction)
         XCTAssertNil(ModelDownloadState.idle.progressFraction)
     }
 
@@ -251,6 +253,12 @@ final class RuntimeAndInputModelValueTests: XCTestCase {
         XCTAssertEqual(ModelDownloadState.idle.statusText, "Not installed")
         XCTAssertEqual(ModelDownloadState.downloading(progress: nil).statusText, "Downloading")
         XCTAssertEqual(ModelDownloadState.downloading(progress: 0.426).statusText, "Downloading 43%")
+        XCTAssertEqual(
+            ModelDownloadState.downloading(progress: 0.426, speedFormatted: "42.5 MB/s", etaFormatted: "1m 15s").statusText,
+            "Downloading 43% (42.5 MB/s · ETA 1m 15s)"
+        )
+        XCTAssertEqual(ModelDownloadState.paused(progress: 0.50).statusText, "Paused (50%)")
+        XCTAssertEqual(ModelDownloadState.paused(progress: nil).statusText, "Paused")
         XCTAssertEqual(ModelDownloadState.downloaded.statusText, "Installed")
         XCTAssertEqual(ModelDownloadState.failed("Network failed").statusText, "Network failed")
     }

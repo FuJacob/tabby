@@ -139,6 +139,9 @@ struct HuggingFaceModelBrowserView: View {
                                 onDownload: {
                                     modelDownloadManager.download(model)
                                 },
+                                onPause: {
+                                    modelDownloadManager.pause(filename: model.filename)
+                                },
                                 onCancel: {
                                     modelDownloadManager.cancel(filename: model.filename)
                                 }
@@ -215,6 +218,7 @@ private struct HFFileRow: View {
     let state: ModelDownloadState
     let isInstalled: Bool
     let onDownload: () -> Void
+    let onPause: () -> Void
     let onCancel: () -> Void
 
     var body: some View {
@@ -235,14 +239,16 @@ private struct HFFileRow: View {
                 actionButton
             }
 
-            if state.isDownloading, let progress = state.progressFraction {
-                ProgressView(value: progress, total: 1)
-                    .progressViewStyle(.linear)
-                    .tint(.blue)
-            } else if state.isDownloading {
-                ProgressView()
-                    .progressViewStyle(.linear)
-                    .tint(.blue)
+            if state.isDownloading || state.isPaused {
+                if let progress = state.progressFraction {
+                    ProgressView(value: progress, total: 1)
+                        .progressViewStyle(.linear)
+                        .tint(state.isPaused ? .secondary : .blue)
+                } else {
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                        .tint(state.isPaused ? .secondary : .blue)
+                }
             }
         }
         .padding(.vertical, 4)
@@ -255,7 +261,7 @@ private struct HFFileRow: View {
 
     @ViewBuilder
     private var actionButton: some View {
-        if isInstalled && !state.isDownloading {
+        if isInstalled && !state.isDownloading && !state.isPaused {
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
                 .font(.system(size: 16))
@@ -266,7 +272,7 @@ private struct HFFileRow: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
 
-            case .downloading(let progress):
+            case .downloading(let progress, _, _):
                 HStack(spacing: 6) {
                     if let progress {
                         Text("\(Int((progress * 100).rounded()))%")
@@ -278,6 +284,47 @@ private struct HFFileRow: View {
                             .controlSize(.small)
                             .frame(width: 40)
                     }
+
+                    Button {
+                        onPause()
+                    } label: {
+                        Image(systemName: "pause.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Pause download")
+
+                    Button {
+                        onCancel()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Cancel download")
+                }
+
+            case .paused(let progress):
+                HStack(spacing: 6) {
+                    if let progress {
+                        Text("\(Int((progress * 100).rounded()))%")
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 40, alignment: .trailing)
+                    }
+
+                    Button {
+                        onDownload()
+                    } label: {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.blue)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Resume download")
+
                     Button {
                         onCancel()
                     } label: {

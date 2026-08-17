@@ -86,4 +86,12 @@ final class FoundationModelAvailabilityServiceTests: XCTestCase {
         XCTAssertFalse(service.isAvailable)
         XCTAssertEqual(service.userVisibleMessage, "User disabled Apple Intelligence.")
     }
+
+    func test_detectionInfo_reportsHostOSAndAvailability() {
+        let (service, _) = makeService(initial: .available)
+        let info = service.detectionInfo
+
+        XCTAssertFalse(info.macosVersion.isEmpty)
+        XCTAssertEqual(info.availabilityState, .available)
+    }
 }

@@ -24,6 +24,7 @@ struct DownloadableModelCatalogView: View {
                     model: model,
                     state: modelDownloadManager.state(for: model),
                     onDownload: { modelDownloadManager.download(model) },
+                    onPause: { modelDownloadManager.pause(filename: model.filename) },
                     onCancel: { modelDownloadManager.cancel(filename: model.filename) }
                 )
             }
@@ -65,6 +66,7 @@ private struct DownloadableModelRow: View {
     let model: DownloadableRuntimeModel
     let state: ModelDownloadState
     let onDownload: () -> Void
+    let onPause: () -> Void
     let onCancel: () -> Void
 
     var body: some View {
@@ -88,7 +90,7 @@ private struct DownloadableModelRow: View {
                 modelActionButton
             }
 
-            if state.isDownloading {
+            if state.isDownloading || state.isPaused {
                 downloadProgressBar
             }
 
@@ -132,7 +134,7 @@ private struct DownloadableModelRow: View {
             Button("Get") { onDownload() }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-        case .downloading(let progress):
+        case .downloading(let progress, _, _):
             HStack(spacing: 6) {
                 if let progress {
                     Text("\(Int((progress * 100).rounded()))%")
@@ -144,10 +146,46 @@ private struct DownloadableModelRow: View {
                         .controlSize(.small)
                         .frame(width: 40)
                 }
-                // Plain SF Symbol button keeps the row compact and matches
-                // the "Get"/"Retry" button affordance scale. Cancel is the
-                // affirmative action while downloading, so it gets the same
-                // visual weight as Get does in the idle state.
+
+                Button {
+                    onPause()
+                } label: {
+                    Image(systemName: "pause.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Pause download")
+
+                Button {
+                    onCancel()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Cancel download")
+            }
+        case .paused(let progress):
+            HStack(spacing: 6) {
+                if let progress {
+                    Text("\(Int((progress * 100).rounded()))%")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                }
+
+                Button {
+                    onDownload()
+                } label: {
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.blue)
+                }
+                .buttonStyle(.plain)
+                .help("Resume download")
+
                 Button {
                     onCancel()
                 } label: {
@@ -181,15 +219,11 @@ private struct DownloadableModelRow: View {
         switch state {
         case .idle:
             installationStatus = "Not installed"
-        case .downloading:
+        case .downloading, .paused:
             installationStatus = state.statusText
         case .downloaded:
             installationStatus = "Installed"
         case .failed:
-            // Terse here; the full message lives in `failureMessageRow` below
-            // where it has room to wrap. Mixing a multi-line error into the
-            // size-label line would either truncate or push the size off
-            // screen on smaller windows.
             installationStatus = "Download failed"
         }
 
@@ -200,6 +234,7 @@ private struct DownloadableModelRow: View {
         switch state {
         case .downloaded: return .green
         case .downloading: return .blue
+        case .paused: return .orange
         case .failed: return .red
         case .idle: return .secondary
         }
@@ -210,11 +245,11 @@ private struct DownloadableModelRow: View {
         if let progress = state.progressFraction {
             ProgressView(value: progress, total: 1)
                 .progressViewStyle(.linear)
-                .tint(.blue)
+                .tint(state.isPaused ? .secondary : .blue)
         } else {
             ProgressView()
                 .progressViewStyle(.linear)
-                .tint(.blue)
+                .tint(state.isPaused ? .secondary : .blue)
         }
     }
 }

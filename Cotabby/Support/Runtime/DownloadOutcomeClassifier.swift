@@ -27,6 +27,16 @@ enum DownloadOutcomeClassifier {
         if let urlError = error as? URLError, urlError.code == .cancelled {
             return true
         }
+        if let aria2Error = error as? Aria2DownloadError, aria2Error == .cancelled {
+            return true
+        }
+        return false
+    }
+
+    static func isUserPause(_ error: Error) -> Bool {
+        if let aria2Error = error as? Aria2DownloadError, aria2Error == .paused {
+            return true
+        }
         return false
     }
 }
