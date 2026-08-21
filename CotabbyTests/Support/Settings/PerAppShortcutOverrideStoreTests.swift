@@ -77,7 +77,11 @@ final class PerAppShortcutOverrideStoreTests: XCTestCase {
         XCTAssertEqual(model.perAppShortcutOverrides.count, 1, "Clearing both actions keeps the tracked app.")
         let restored = try XCTUnwrap(model.perAppShortcutOverrides.first)
         XCTAssertNil(restored.acceptKeyCode)
+        XCTAssertNil(restored.acceptKeyModifiers)
+        XCTAssertNil(restored.acceptKeyLabel)
         XCTAssertNil(restored.fullAcceptKeyCode)
+        XCTAssertNil(restored.fullAcceptKeyModifiers)
+        XCTAssertNil(restored.fullAcceptKeyLabel)
     }
 
     /// `removePerAppOverride` is the user's "Reset to global" affordance: it drops the row no
