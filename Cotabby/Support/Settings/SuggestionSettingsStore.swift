@@ -712,9 +712,7 @@ struct SuggestionSettingsStore {
         }
     }
 
-    /// An empty list removes the key entirely (mirroring `saveDisabledAppRules`) so a fresh
-    /// install and a mutated-back-to-empty store are indistinguishable on disk, and the absent vs
-    /// present distinction in `load` only ever fires on the very first launch.
+    /// Removing the key for an empty list keeps reset state identical to a fresh install.
     func savePerAppShortcutOverrides(_ overrides: [PerAppShortcutOverride]) {
         guard !overrides.isEmpty else {
             userDefaults.removeObject(forKey: Self.perAppShortcutOverridesDefaultsKey)
@@ -1002,9 +1000,7 @@ struct SuggestionSettingsStore {
         return Self.sanitizedPerAppShortcutOverrides(decoded)
     }
 
-    /// Trim, dedupe by bundle id, collapse partial bindings to "inherit global", and normalize each
-    /// row's display name. Rows with both actions inherited remain valid because they represent an
-    /// app the user explicitly added without pinning it away from future global shortcut changes.
+    /// Normalizes identity fields and deduplicates rows while preserving explicitly tracked apps.
     private static func sanitizedPerAppShortcutOverrides(
         _ overrides: [PerAppShortcutOverride]
     ) -> [PerAppShortcutOverride] {
@@ -1014,22 +1010,14 @@ struct SuggestionSettingsStore {
             guard let normalizedBundleIdentifier = normalizedBundleIdentifier(override.bundleIdentifier) else {
                 continue
             }
-            // Collapse any partial binding (e.g. a key code with no label) to "inherit global" so a
-            // persisted row can never advertise a binding that `ShortcutResolver` will ignore.
-            let normalized = override.bindingsNormalized
-
             byBundle[normalizedBundleIdentifier] = PerAppShortcutOverride(
                 bundleIdentifier: normalizedBundleIdentifier,
                 displayName: normalizedDisplayName(
-                    normalized.displayName,
+                    override.displayName,
                     fallbackBundleIdentifier: normalizedBundleIdentifier
                 ),
-                acceptKeyCode: normalized.acceptKeyCode,
-                acceptKeyModifiers: normalized.acceptKeyModifiers,
-                acceptKeyLabel: normalized.acceptKeyLabel,
-                fullAcceptKeyCode: normalized.fullAcceptKeyCode,
-                fullAcceptKeyModifiers: normalized.fullAcceptKeyModifiers,
-                fullAcceptKeyLabel: normalized.fullAcceptKeyLabel
+                acceptance: override.acceptance,
+                fullAcceptance: override.fullAcceptance
             )
         }
 

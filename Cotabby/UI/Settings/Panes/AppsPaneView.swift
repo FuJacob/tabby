@@ -2,11 +2,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// File overview:
-/// "Apps" detail pane of the redesigned Settings window. Lists every app where Cotabby is
-/// disabled, lets the user remove individual rules, and offers a file-picker entry point for apps
-/// that can't be reached from the menu-bar toggle (launchers like Raycast or Spotlight that
-/// dismiss themselves the moment the menu bar is clicked).
+/// App-specific settings for shortcut overrides, exclusions, and integrated terminals.
 struct AppsPaneView: View {
     @ObservedObject var suggestionSettings: SuggestionSettingsModel
 
@@ -14,9 +10,7 @@ struct AppsPaneView: View {
     /// notifications: the panel is not a live process inspector, and re-rendering as random apps
     /// open and close would make the chips flicker while the user is mid-task.
     @State private var runningAppSuggestions: [RunningAppSuggestion] = []
-    /// Which (bundle identifier, action) the user is currently re-recording. Single-value state
-    /// rather than a per-row binding so only one recorder can be active at a time — pressing
-    /// "Change" on a second row dismisses the first, matching the global Shortcuts pane.
+    /// A single target prevents multiple key recorders from running at once.
     @State private var recordingTarget: RecordingTarget?
 
     var body: some View {
@@ -184,21 +178,17 @@ struct AppsPaneView: View {
         .padding(.vertical, 4)
     }
 
-    /// One (action) row inside one per-app override. Renders the resolved keycap (override or
-    /// global), then either a Change button (no override yet) or the full KeybindRow chrome
-    /// (override set, with Reset-to-global as the affordance for clearing back to inheritance).
     @ViewBuilder
     private func perAppBindingRow(
         override: PerAppShortcutOverride,
-        action: ShortcutAction,
+        action: PerAppShortcutAction,
         title: String,
         inheritsHelp: String
     ) -> some View {
-        let inherits = (action == .acceptWord && !override.hasAcceptOverride)
-            || (action == .acceptEntireSuggestion && !override.hasFullAcceptOverride)
+        let inherits = (action == .acceptWord && override.acceptance == nil)
+            || (action == .acceptEntireSuggestion && override.fullAcceptance == nil)
         let recordingBinding = recordingBinding(forBundleIdentifier: override.bundleIdentifier, action: action)
-        let label = perAppBindingLabel(override: override, action: action)
-        let keyCode = perAppBindingKeyCode(override: override, action: action)
+        let binding = perAppBinding(override: override, action: action)
 
         HStack(alignment: .center, spacing: 12) {
             Text(title)
@@ -206,7 +196,7 @@ struct AppsPaneView: View {
                 .frame(width: 180, alignment: .leading)
 
             if inherits {
-                Text("Uses global (\(label))")
+                Text("Uses global (\(binding.label))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .help(inheritsHelp)
@@ -244,8 +234,8 @@ struct AppsPaneView: View {
                 }
             } else {
                 KeybindRow(
-                    label: label,
-                    keyCode: keyCode,
+                    label: binding.label,
+                    keyCode: binding.keyCode,
                     isRecording: recordingBinding,
                     onRecord: { keyCode, modifiers, recordedLabel in
                         applyPerAppBinding(
@@ -271,7 +261,10 @@ struct AppsPaneView: View {
         }
     }
 
-    private func recordingBinding(forBundleIdentifier bundleIdentifier: String, action: ShortcutAction) -> Binding<Bool> {
+    private func recordingBinding(
+        forBundleIdentifier bundleIdentifier: String,
+        action: PerAppShortcutAction
+    ) -> Binding<Bool> {
         Binding(
             get: {
                 recordingTarget == RecordingTarget(bundleIdentifier: bundleIdentifier, action: action)
@@ -286,31 +279,25 @@ struct AppsPaneView: View {
         )
     }
 
-    private func perAppBindingLabel(override: PerAppShortcutOverride, action: ShortcutAction) -> String {
+    private func perAppBinding(
+        override: PerAppShortcutOverride,
+        action: PerAppShortcutAction
+    ) -> ShortcutResolver.ResolvedBinding {
         switch action {
         case .acceptWord:
-            return override.acceptKeyLabel ?? suggestionSettings.acceptanceKeyLabel
+            return suggestionSettings.resolvedAcceptBinding(
+                forBundleIdentifier: override.bundleIdentifier
+            )
         case .acceptEntireSuggestion:
-            return override.fullAcceptKeyLabel ?? suggestionSettings.fullAcceptanceKeyLabel
-        case .toggleTabby:
-            return suggestionSettings.globalToggleKeyLabel
-        }
-    }
-
-    private func perAppBindingKeyCode(override: PerAppShortcutOverride, action: ShortcutAction) -> CGKeyCode {
-        switch action {
-        case .acceptWord:
-            return override.acceptKeyCode ?? suggestionSettings.acceptanceKeyCode
-        case .acceptEntireSuggestion:
-            return override.fullAcceptKeyCode ?? suggestionSettings.fullAcceptanceKeyCode
-        case .toggleTabby:
-            return suggestionSettings.globalToggleKeyCode
+            return suggestionSettings.resolvedFullAcceptBinding(
+                forBundleIdentifier: override.bundleIdentifier
+            )
         }
     }
 
     private func applyPerAppBinding(
         override: PerAppShortcutOverride,
-        action: ShortcutAction,
+        action: PerAppShortcutAction,
         keyCode: CGKeyCode,
         modifiers: ShortcutModifierMask,
         label: String
@@ -332,25 +319,25 @@ struct AppsPaneView: View {
                 modifiers: modifiers,
                 label: label
             )
-        case .toggleTabby:
-            // Per-app toggle is not exposed in this UI; the global toggle is intentionally global
-            // because its purpose is to disable Cotabby everywhere.
-            break
         }
     }
 
-    private func clearPerAppBinding(override: PerAppShortcutOverride, action: ShortcutAction) {
+    private func clearPerAppBinding(
+        override: PerAppShortcutOverride,
+        action: PerAppShortcutAction
+    ) {
         switch action {
         case .acceptWord:
             suggestionSettings.clearPerAppAcceptKey(bundleIdentifier: override.bundleIdentifier)
         case .acceptEntireSuggestion:
             suggestionSettings.clearPerAppFullAcceptKey(bundleIdentifier: override.bundleIdentifier)
-        case .toggleTabby:
-            break
         }
     }
 
-    private func disablePerAppBinding(override: PerAppShortcutOverride, action: ShortcutAction) {
+    private func disablePerAppBinding(
+        override: PerAppShortcutOverride,
+        action: PerAppShortcutAction
+    ) {
         applyPerAppBinding(
             override: override,
             action: action,
@@ -362,14 +349,14 @@ struct AppsPaneView: View {
 
     private func perAppConflictChecker(
         bundleIdentifier: String,
-        action: ShortcutAction
+        action: PerAppShortcutAction
     ) -> (CGKeyCode, ShortcutModifierMask) -> String? {
         { keyCode, modifiers in
             suggestionSettings.conflictingPerAppShortcutName(
                 forBundleIdentifier: bundleIdentifier,
                 keyCode: keyCode,
                 modifiers: modifiers,
-                excluding: action
+                excluding: action.shortcutAction
             )
         }
     }
@@ -388,8 +375,6 @@ struct AppsPaneView: View {
 
         for url in panel.urls {
             guard let metadata = ApplicationBundleMetadata(appURL: url) else { continue }
-            // Adding an app is not itself a shortcut choice. Keep both actions inherited until the
-            // user records or disables one, so later global changes continue to flow through.
             suggestionSettings.addPerAppShortcutApp(
                 bundleIdentifier: metadata.bundleIdentifier,
                 displayName: metadata.displayName
@@ -476,11 +461,22 @@ struct AppsPaneView: View {
     }
 }
 
-/// Identifies which per-app row+action is currently capturing a keybind. Kept as a single State
-/// value in the pane so opening one recorder dismisses any other (matches the Shortcuts pane).
+/// Identifies the only per-app key recorder allowed to be active.
 private struct RecordingTarget: Equatable {
     let bundleIdentifier: String
-    let action: ShortcutAction
+    let action: PerAppShortcutAction
+}
+
+private enum PerAppShortcutAction: Equatable {
+    case acceptWord
+    case acceptEntireSuggestion
+
+    var shortcutAction: ShortcutAction {
+        switch self {
+        case .acceptWord: return .acceptWord
+        case .acceptEntireSuggestion: return .acceptEntireSuggestion
+        }
+    }
 }
 
 /// One disable-able app surfaced from the running-process list. Captures the icon up front so the

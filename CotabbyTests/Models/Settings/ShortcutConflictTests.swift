@@ -73,9 +73,6 @@ final class ShortcutConflictTests: XCTestCase {
 
     // MARK: - Per-app override scoping
 
-    /// Per-app conflict scoping: two different apps can bind the same combo without conflict,
-    /// because the resolver picks based on the frontmost bundle id at event time. Refusing this
-    /// combo would force the user into a "globally unique" universe that has no reason to exist.
     func test_perAppConflict_allowsSameComboAcrossDifferentApps() {
         let model = makeModel()
         model.setPerAppAcceptKey(
@@ -89,11 +86,9 @@ final class ShortcutConflictTests: XCTestCase {
             modifiers: [],
             excluding: .acceptWord
         )
-        XCTAssertNil(conflict, "Different app + same combo is not a conflict.")
+        XCTAssertNil(conflict)
     }
 
-    /// Within ONE app, binding accept-word to the same combo already held by full-accept must be
-    /// flagged so the keystroke isn't ambiguous on that app.
     func test_perAppConflict_flagsSameAppCrossActionCollision() {
         let model = makeModel()
         model.setPerAppFullAcceptKey(
@@ -110,8 +105,6 @@ final class ShortcutConflictTests: XCTestCase {
         XCTAssertEqual(conflict, "Accept Entire Suggestion")
     }
 
-    /// An absent same-app full-accept override still resolves to the global full-accept key. The
-    /// recorder must compare against that effective fallback, not just explicitly stored fields.
     func test_perAppConflict_flagsGlobalFullAcceptFallbackCollision() {
         let model = makeModel()
 
@@ -125,7 +118,6 @@ final class ShortcutConflictTests: XCTestCase {
         XCTAssertEqual(conflict, "Accept Entire Suggestion")
     }
 
-    /// The inverse fallback is equally important when recording a per-app full-accept binding.
     func test_perAppConflict_flagsGlobalAcceptFallbackCollision() {
         let model = makeModel()
 
@@ -139,8 +131,6 @@ final class ShortcutConflictTests: XCTestCase {
         XCTAssertEqual(conflict, "Accept Word")
     }
 
-    /// The global toggle is app-spanning, so a per-app accept that collides with it would still
-    /// be eaten by the toggle tap. Refuse the combo up front.
     func test_perAppConflict_flagsGlobalToggleCollision() {
         let model = makeModel()
         model.setGlobalToggleKey(keyCode: 49, modifiers: [.command, .shift], label: "⌘⇧Space")
@@ -153,7 +143,6 @@ final class ShortcutConflictTests: XCTestCase {
         XCTAssertEqual(conflict, "Toggle Tabby")
     }
 
-    /// Re-recording the same action on the same app must not be flagged as a self-collision.
     func test_perAppConflict_allowsRebindingSameActionToSameKey() {
         let model = makeModel()
         model.setPerAppAcceptKey(
@@ -175,6 +164,9 @@ final class ShortcutConflictTests: XCTestCase {
         let suiteName = "cotabby.test.shortcutConflict.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
         return SuggestionSettingsModel(configuration: .standard, userDefaults: defaults)
     }
 }

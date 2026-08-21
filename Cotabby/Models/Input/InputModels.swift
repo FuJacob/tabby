@@ -36,9 +36,7 @@ struct ShortcutModifierMask: OptionSet, Hashable, Sendable, Codable {
         self = mask
     }
 
-    // Single-value coding lets persisted per-app overrides store the modifier set as a plain
-    // integer in JSON — same on-disk shape the standalone `acceptanceKeyModifiers` UserDefault
-    // uses, so the two are debuggable side by side and migrate cleanly if we ever consolidate.
+    // Keep persisted modifier masks scalar, matching the existing shortcut defaults.
     init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(UInt32.self)
         self.init(rawValue: raw)

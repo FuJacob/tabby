@@ -1,161 +1,130 @@
 import XCTest
 @testable import Cotabby
 
-/// Locks down `ShortcutResolver`, the pure function that decides which (keyCode, modifiers, label)
-/// fires for the frontmost app. The precedence rule lives in the type doc; these tests pin it.
+/// Verifies per-app shortcut precedence independently of the global event tap.
 final class ShortcutResolverTests: XCTestCase {
-
-    // MARK: - Accept (word)
-
-    /// No override for the focused app → resolver falls back to the global accept binding.
-    /// This is the most important property: a fresh install with no per-app rows must behave
-    /// exactly like the global Shortcuts pane.
     func test_acceptBinding_fallsBackToGlobalWhenNoOverride() {
-        let resolved = ShortcutResolver.acceptBinding(
-            frontmostBundleIdentifier: "com.apple.notes",
-            overrides: [],
-            globalKeyCode: 48,
-            globalModifiers: [],
-            globalLabel: "Tab"
-        )
-        XCTAssertEqual(resolved.keyCode, 48)
-        XCTAssertEqual(resolved.modifiers, [])
-        XCTAssertEqual(resolved.label, "Tab")
+        XCTAssertEqual(resolveAccept(), globalAccept)
     }
 
-    /// A complete override (all three fields set) takes precedence over the global binding.
     func test_acceptBinding_usesOverrideWhenPresent() {
-        let override = PerAppShortcutOverride(
-            bundleIdentifier: "com.apple.notes",
-            displayName: "Notes",
-            acceptKeyCode: 49,
-            acceptKeyModifiers: [.shift],
-            acceptKeyLabel: "⇧Space",
-            fullAcceptKeyCode: nil,
-            fullAcceptKeyModifiers: nil,
-            fullAcceptKeyLabel: nil
+        let resolved = resolveAccept(
+            overrides: [makeOverride(acceptance: binding(49, [.shift], "⇧Space"))]
         )
-        let resolved = ShortcutResolver.acceptBinding(
-            frontmostBundleIdentifier: "com.apple.notes",
-            overrides: [override],
-            globalKeyCode: 48,
-            globalModifiers: [],
-            globalLabel: "Tab"
-        )
-        XCTAssertEqual(resolved.keyCode, 49)
-        XCTAssertEqual(resolved.modifiers, [.shift])
-        XCTAssertEqual(resolved.label, "⇧Space")
+
+        XCTAssertEqual(resolved, .init(keyCode: 49, modifiers: [.shift], label: "⇧Space"))
     }
 
-    /// A *partial* override that has only the full-accept fields set must NOT contaminate the
-    /// accept-word resolution — the absent accept-word fields fall back to global.
-    /// This is the heart of the "nil-means-inherit" design and the easiest case to get wrong.
-    func test_acceptBinding_partialOverrideOnlyAffectsItsOwnAction() {
-        let override = PerAppShortcutOverride(
-            bundleIdentifier: "com.apple.notes",
-            displayName: "Notes",
-            acceptKeyCode: nil,
-            acceptKeyModifiers: nil,
-            acceptKeyLabel: nil,
-            fullAcceptKeyCode: 50,
-            fullAcceptKeyModifiers: [.shift],
-            fullAcceptKeyLabel: "⇧`"
+    func test_acceptBinding_fullAcceptOverrideDoesNotAffectWordAccept() {
+        let resolved = resolveAccept(
+            overrides: [makeOverride(fullAcceptance: binding(50, [.shift], "⇧`"))]
         )
-        let resolved = ShortcutResolver.acceptBinding(
-            frontmostBundleIdentifier: "com.apple.notes",
-            overrides: [override],
-            globalKeyCode: 48,
-            globalModifiers: [],
-            globalLabel: "Tab"
-        )
-        XCTAssertEqual(resolved.keyCode, 48)
-        XCTAssertEqual(resolved.label, "Tab")
+
+        XCTAssertEqual(resolved, globalAccept)
     }
 
-    /// The frontmost bundle id determines which override (if any) wins. A different app's
-    /// override must never leak across.
-    func test_acceptBinding_doesNotLeakAcrossUnrelatedApps() {
-        let override = PerAppShortcutOverride(
-            bundleIdentifier: "com.apple.notes",
-            displayName: "Notes",
-            acceptKeyCode: 49, acceptKeyModifiers: [], acceptKeyLabel: "Space",
-            fullAcceptKeyCode: nil, fullAcceptKeyModifiers: nil, fullAcceptKeyLabel: nil
+    func test_acceptBinding_doesNotLeakAcrossApps() {
+        let resolved = resolveAccept(
+            bundleIdentifier: "com.example.other",
+            overrides: [makeOverride(acceptance: binding(49, [], "Space"))]
         )
-        let resolved = ShortcutResolver.acceptBinding(
-            frontmostBundleIdentifier: "com.example.other",
-            overrides: [override],
-            globalKeyCode: 48, globalModifiers: [], globalLabel: "Tab"
-        )
-        XCTAssertEqual(resolved.keyCode, 48)
+
+        XCTAssertEqual(resolved, globalAccept)
     }
 
-    /// A nil frontmost bundle id (focus snapshot has no app yet) falls through to the global.
-    /// Without this property the resolver could misattribute the first keystroke after launch.
-    func test_acceptBinding_nilBundleIdResolvesToGlobal() {
-        let override = PerAppShortcutOverride(
-            bundleIdentifier: "com.apple.notes", displayName: "Notes",
-            acceptKeyCode: 49, acceptKeyModifiers: [], acceptKeyLabel: "Space",
-            fullAcceptKeyCode: nil, fullAcceptKeyModifiers: nil, fullAcceptKeyLabel: nil
+    func test_acceptBinding_nilBundleIdentifierUsesGlobal() {
+        let resolved = resolveAccept(
+            bundleIdentifier: nil,
+            overrides: [makeOverride(acceptance: binding(49, [], "Space"))]
         )
-        let resolved = ShortcutResolver.acceptBinding(
-            frontmostBundleIdentifier: nil,
-            overrides: [override],
-            globalKeyCode: 48, globalModifiers: [], globalLabel: "Tab"
-        )
-        XCTAssertEqual(resolved.keyCode, 48)
-        XCTAssertEqual(resolved.label, "Tab")
+
+        XCTAssertEqual(resolved, globalAccept)
     }
 
-    /// The disabled sentinel for an override means "no key accepts in this app" — a legitimate
-    /// user choice the resolver must honor verbatim, NOT silently inherit the global.
-    func test_acceptBinding_honorsDisabledSentinelOverride() {
-        let override = PerAppShortcutOverride(
-            bundleIdentifier: "com.apple.notes", displayName: "Notes",
-            acceptKeyCode: SuggestionSettingsModel.disabledKeyCode,
-            acceptKeyModifiers: [],
-            acceptKeyLabel: SuggestionSettingsModel.disabledKeyLabel,
-            fullAcceptKeyCode: nil, fullAcceptKeyModifiers: nil, fullAcceptKeyLabel: nil
+    func test_acceptBinding_honorsDisabledOverride() {
+        let disabled = binding(
+            SuggestionSettingsModel.disabledKeyCode,
+            [],
+            SuggestionSettingsModel.disabledKeyLabel
         )
-        let resolved = ShortcutResolver.acceptBinding(
-            frontmostBundleIdentifier: "com.apple.notes",
-            overrides: [override],
-            globalKeyCode: 48, globalModifiers: [], globalLabel: "Tab"
+
+        XCTAssertEqual(
+            resolveAccept(overrides: [makeOverride(acceptance: disabled)]),
+            .init(
+                keyCode: SuggestionSettingsModel.disabledKeyCode,
+                modifiers: [],
+                label: SuggestionSettingsModel.disabledKeyLabel
+            )
         )
-        XCTAssertEqual(resolved.keyCode, SuggestionSettingsModel.disabledKeyCode)
     }
 
-    // MARK: - Full-accept
-
-    /// Mirror property for the full-accept action: override wins when present, otherwise global.
     func test_fullAcceptBinding_usesOverrideWhenPresent() {
-        let override = PerAppShortcutOverride(
-            bundleIdentifier: "com.apple.notes", displayName: "Notes",
-            acceptKeyCode: nil, acceptKeyModifiers: nil, acceptKeyLabel: nil,
-            fullAcceptKeyCode: 36, fullAcceptKeyModifiers: [.command], fullAcceptKeyLabel: "⌘Return"
+        let resolved = resolveFullAccept(
+            overrides: [makeOverride(fullAcceptance: binding(36, [.command], "⌘Return"))]
         )
-        let resolved = ShortcutResolver.fullAcceptBinding(
-            frontmostBundleIdentifier: "com.apple.notes",
-            overrides: [override],
-            globalKeyCode: 50, globalModifiers: [], globalLabel: "`"
-        )
-        XCTAssertEqual(resolved.keyCode, 36)
-        XCTAssertEqual(resolved.modifiers, [.command])
-        XCTAssertEqual(resolved.label, "⌘Return")
+
+        XCTAssertEqual(resolved, .init(keyCode: 36, modifiers: [.command], label: "⌘Return"))
     }
 
-    /// And the inverse: only the accept-word override is set → full-accept still inherits global.
-    func test_fullAcceptBinding_inheritsGlobalWhenOnlyAcceptOverrideIsSet() {
-        let override = PerAppShortcutOverride(
-            bundleIdentifier: "com.apple.notes", displayName: "Notes",
-            acceptKeyCode: 49, acceptKeyModifiers: [], acceptKeyLabel: "Space",
-            fullAcceptKeyCode: nil, fullAcceptKeyModifiers: nil, fullAcceptKeyLabel: nil
+    func test_fullAcceptBinding_wordAcceptOverrideDoesNotAffectFullAccept() {
+        let resolved = resolveFullAccept(
+            overrides: [makeOverride(acceptance: binding(49, [], "Space"))]
         )
-        let resolved = ShortcutResolver.fullAcceptBinding(
-            frontmostBundleIdentifier: "com.apple.notes",
-            overrides: [override],
-            globalKeyCode: 50, globalModifiers: [], globalLabel: "`"
+
+        XCTAssertEqual(resolved, globalFullAccept)
+    }
+
+    private var globalAccept: ShortcutResolver.ResolvedBinding {
+        .init(keyCode: 48, modifiers: [], label: "Tab")
+    }
+
+    private var globalFullAccept: ShortcutResolver.ResolvedBinding {
+        .init(keyCode: 50, modifiers: [], label: "`")
+    }
+
+    private func resolveAccept(
+        bundleIdentifier: String? = "com.apple.notes",
+        overrides: [PerAppShortcutOverride] = []
+    ) -> ShortcutResolver.ResolvedBinding {
+        ShortcutResolver.acceptBinding(
+            frontmostBundleIdentifier: bundleIdentifier,
+            overrides: overrides,
+            globalKeyCode: globalAccept.keyCode,
+            globalModifiers: globalAccept.modifiers,
+            globalLabel: globalAccept.label
         )
-        XCTAssertEqual(resolved.keyCode, 50)
-        XCTAssertEqual(resolved.label, "`")
+    }
+
+    private func resolveFullAccept(
+        bundleIdentifier: String? = "com.apple.notes",
+        overrides: [PerAppShortcutOverride] = []
+    ) -> ShortcutResolver.ResolvedBinding {
+        ShortcutResolver.fullAcceptBinding(
+            frontmostBundleIdentifier: bundleIdentifier,
+            overrides: overrides,
+            globalKeyCode: globalFullAccept.keyCode,
+            globalModifiers: globalFullAccept.modifiers,
+            globalLabel: globalFullAccept.label
+        )
+    }
+
+    private func binding(
+        _ keyCode: CGKeyCode,
+        _ modifiers: ShortcutModifierMask,
+        _ label: String
+    ) -> SuggestionShortcutBindingSettings {
+        .init(keyCode: keyCode, modifiers: modifiers, label: label)
+    }
+
+    private func makeOverride(
+        acceptance: SuggestionShortcutBindingSettings? = nil,
+        fullAcceptance: SuggestionShortcutBindingSettings? = nil
+    ) -> PerAppShortcutOverride {
+        .init(
+            bundleIdentifier: "com.apple.notes",
+            displayName: "Notes",
+            acceptance: acceptance,
+            fullAcceptance: fullAcceptance
+        )
     }
 }

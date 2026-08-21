@@ -1,40 +1,29 @@
 import XCTest
 @testable import Cotabby
 
-/// Locks down the load/sanitize/persist round-trip for the per-app shortcut overrides store.
-///
-/// The store has to be as forgiving as `disabledAppRules`: a fresh install has an absent key
-/// (not an empty array); a mutated-back-to-empty store removes the key entirely; whitespace
-/// and duplicate bundle ids are normalized on read. These properties matter because the model
-/// publishes the array to the InputMonitor's event-time closures — any decode quirk that
-/// resurrects a zombie row would resolve to the wrong key on every keystroke.
+/// Covers persistence and identity sanitization for per-app shortcut overrides.
 @MainActor
 final class PerAppShortcutOverrideStoreTests: XCTestCase {
-
     func test_freshInstall_hasNoOverrides() {
-        let model = makeModel()
-        XCTAssertTrue(model.perAppShortcutOverrides.isEmpty)
+        XCTAssertTrue(makeModel().perAppShortcutOverrides.isEmpty)
     }
 
-    func test_addPerAppShortcutApp_persistsInheritedBindings() {
-        let suiteName = makeSuiteName()
-        let firstModel = makeModel(suiteName: suiteName)
-        firstModel.addPerAppShortcutApp(
+    func test_addPerAppShortcutApp_persistsInheritedBindings() throws {
+        let defaults = makeIsolatedDefaults()
+        makeModel(defaults).addPerAppShortcutApp(
             bundleIdentifier: "com.apple.notes",
             displayName: "Notes"
         )
 
-        let secondModel = makeModel(suiteName: suiteName)
-        let restored = try? XCTUnwrap(secondModel.perAppShortcutOverrides.first)
-        XCTAssertEqual(restored?.bundleIdentifier, "com.apple.notes")
-        XCTAssertNil(restored?.acceptKeyCode)
-        XCTAssertNil(restored?.fullAcceptKeyCode)
+        let restored = try XCTUnwrap(makeModel(defaults).perAppShortcutOverrides.first)
+        XCTAssertEqual(restored.bundleIdentifier, "com.apple.notes")
+        XCTAssertNil(restored.acceptance)
+        XCTAssertNil(restored.fullAcceptance)
     }
 
-    func test_setPerAppAcceptKey_persistsAndRoundTrips() {
-        let suiteName = makeSuiteName()
-        let firstModel = makeModel(suiteName: suiteName)
-        firstModel.setPerAppAcceptKey(
+    func test_setPerAppAcceptKey_roundTripsAtomicBinding() throws {
+        let defaults = makeIsolatedDefaults()
+        makeModel(defaults).setPerAppAcceptKey(
             bundleIdentifier: "com.apple.notes",
             displayName: "Notes",
             keyCode: 49,
@@ -42,168 +31,149 @@ final class PerAppShortcutOverrideStoreTests: XCTestCase {
             label: "⇧Space"
         )
 
-        let secondModel = makeModel(suiteName: suiteName)
-        XCTAssertEqual(secondModel.perAppShortcutOverrides.count, 1)
-        let restored = try? XCTUnwrap(secondModel.perAppShortcutOverrides.first)
-        XCTAssertEqual(restored?.bundleIdentifier, "com.apple.notes")
-        XCTAssertEqual(restored?.acceptKeyCode, 49)
-        XCTAssertEqual(restored?.acceptKeyModifiers, [.shift])
-        XCTAssertEqual(restored?.acceptKeyLabel, "⇧Space")
-        // The full-accept fields were never set on this app, so they must round-trip as nil so
-        // the resolver inherits the global binding.
-        XCTAssertNil(restored?.fullAcceptKeyCode)
-        XCTAssertNil(restored?.fullAcceptKeyModifiers)
-        XCTAssertNil(restored?.fullAcceptKeyLabel)
+        let restored = try XCTUnwrap(makeModel(defaults).perAppShortcutOverrides.first)
+        XCTAssertEqual(
+            restored.acceptance,
+            .init(keyCode: 49, modifiers: [.shift], label: "⇧Space")
+        )
+        XCTAssertNil(restored.fullAcceptance)
     }
 
-    /// Clearing both actions restores inheritance without losing the app the user deliberately
-    /// added to the settings list.
     func test_clearingBothActions_keepsTrackedAppWithInheritedBindings() throws {
         let model = makeModel()
         model.setPerAppAcceptKey(
-            bundleIdentifier: "com.apple.notes", displayName: "Notes",
-            keyCode: 49, modifiers: [], label: "Space"
+            bundleIdentifier: "com.apple.notes",
+            displayName: "Notes",
+            keyCode: 49,
+            modifiers: [],
+            label: "Space"
         )
         model.setPerAppFullAcceptKey(
-            bundleIdentifier: "com.apple.notes", displayName: "Notes",
-            keyCode: 36, modifiers: [.command], label: "⌘Return"
+            bundleIdentifier: "com.apple.notes",
+            displayName: "Notes",
+            keyCode: 36,
+            modifiers: [.command],
+            label: "⌘Return"
         )
-        XCTAssertEqual(model.perAppShortcutOverrides.count, 1)
 
         model.clearPerAppAcceptKey(bundleIdentifier: "com.apple.notes")
-        XCTAssertEqual(model.perAppShortcutOverrides.count, 1, "Row still has full-accept.")
-
         model.clearPerAppFullAcceptKey(bundleIdentifier: "com.apple.notes")
-        XCTAssertEqual(model.perAppShortcutOverrides.count, 1, "Clearing both actions keeps the tracked app.")
+
         let restored = try XCTUnwrap(model.perAppShortcutOverrides.first)
-        XCTAssertNil(restored.acceptKeyCode)
-        XCTAssertNil(restored.acceptKeyModifiers)
-        XCTAssertNil(restored.acceptKeyLabel)
-        XCTAssertNil(restored.fullAcceptKeyCode)
-        XCTAssertNil(restored.fullAcceptKeyModifiers)
-        XCTAssertNil(restored.fullAcceptKeyLabel)
+        XCTAssertNil(restored.acceptance)
+        XCTAssertNil(restored.fullAcceptance)
     }
 
-    /// `removePerAppOverride` is the user's "Reset to global" affordance: it drops the row no
-    /// matter what bindings it held.
-    func test_removePerAppOverride_dropsRowImmediately() {
+    func test_removePerAppOverride_dropsRow() {
         let model = makeModel()
         model.setPerAppAcceptKey(
-            bundleIdentifier: "com.apple.notes", displayName: "Notes",
-            keyCode: 49, modifiers: [], label: "Space"
+            bundleIdentifier: "com.apple.notes",
+            displayName: "Notes",
+            keyCode: 49,
+            modifiers: [],
+            label: "Space"
         )
+
         model.removePerAppOverride(bundleIdentifier: "com.apple.notes")
+
         XCTAssertTrue(model.perAppShortcutOverrides.isEmpty)
     }
 
-    /// Bundle identifiers with surrounding whitespace must be normalized; otherwise the same
-    /// app can end up with two rows after a typo-y manual edit of UserDefaults.
     func test_setPerAppAcceptKey_normalizesBundleIdentifier() {
         let model = makeModel()
         model.setPerAppAcceptKey(
             bundleIdentifier: "  com.apple.notes  ",
             displayName: "Notes",
-            keyCode: 49, modifiers: [], label: "Space"
+            keyCode: 49,
+            modifiers: [],
+            label: "Space"
         )
+
         XCTAssertEqual(model.perAppShortcutOverrides.first?.bundleIdentifier, "com.apple.notes")
     }
 
-    /// Empty/whitespace bundle ids are rejected outright — a row with no identity could never be
-    /// resolved.
     func test_setPerAppAcceptKey_rejectsEmptyBundleIdentifier() {
         let model = makeModel()
         model.setPerAppAcceptKey(
             bundleIdentifier: "   ",
             displayName: "Whatever",
-            keyCode: 49, modifiers: [], label: "Space"
+            keyCode: 49,
+            modifiers: [],
+            label: "Space"
         )
+
         XCTAssertTrue(model.perAppShortcutOverrides.isEmpty)
     }
 
-    /// Two writes for the same bundle identifier replace each other rather than producing two
-    /// rows. Without this property the published array could grow unboundedly across a long
-    /// session of re-recording the same app.
-    func test_setPerAppAcceptKey_dedupesByBundleIdentifier() {
+    func test_setPerAppAcceptKey_replacesExistingBundle() {
         let model = makeModel()
         model.setPerAppAcceptKey(
-            bundleIdentifier: "com.apple.notes", displayName: "Notes",
-            keyCode: 49, modifiers: [], label: "Space"
+            bundleIdentifier: "com.apple.notes",
+            displayName: "Notes",
+            keyCode: 49,
+            modifiers: [],
+            label: "Space"
         )
         model.setPerAppAcceptKey(
-            bundleIdentifier: "com.apple.notes", displayName: "Notes",
-            keyCode: 36, modifiers: [.command], label: "⌘Return"
+            bundleIdentifier: "com.apple.notes",
+            displayName: "Notes",
+            keyCode: 36,
+            modifiers: [.command],
+            label: "⌘Return"
         )
+
         XCTAssertEqual(model.perAppShortcutOverrides.count, 1)
-        XCTAssertEqual(model.perAppShortcutOverrides.first?.acceptKeyCode, 36)
+        XCTAssertEqual(
+            model.perAppShortcutOverrides.first?.acceptance,
+            .init(keyCode: 36, modifiers: [.command], label: "⌘Return")
+        )
     }
 
-    /// An all-inherited row records an app the user added without choosing a binding yet, so load
-    /// preserves it rather than silently converting app selection into an explicit shortcut.
-    func test_sanitize_preservesAllInheritedRowsOnLoad() throws {
-        let suiteName = makeSuiteName()
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        // Encode a row with all-nil bindings (which the live store never produces) and stash it
-        // directly to simulate a previous-version persisted blob.
-        let empty = PerAppShortcutOverride(
-            bundleIdentifier: "com.apple.notes",
-            displayName: "Notes",
-            acceptKeyCode: nil, acceptKeyModifiers: nil, acceptKeyLabel: nil,
-            fullAcceptKeyCode: nil, fullAcceptKeyModifiers: nil, fullAcceptKeyLabel: nil
+    func test_load_normalizesAndDeduplicatesBundleIdentifiers() throws {
+        let defaults = makeIsolatedDefaults()
+        let staleRows = [
+            PerAppShortcutOverride(
+                bundleIdentifier: " com.apple.notes ",
+                displayName: "Old Name",
+                acceptance: .init(keyCode: 49, modifiers: [], label: "Space")
+            ),
+            PerAppShortcutOverride(
+                bundleIdentifier: "com.apple.notes",
+                displayName: "Notes",
+                fullAcceptance: .init(keyCode: 36, modifiers: [.command], label: "⌘Return")
+            )
+        ]
+        defaults.set(
+            try JSONEncoder().encode(staleRows),
+            forKey: "cotabbyPerAppShortcutOverrides"
         )
-        let data = try JSONEncoder().encode([empty])
-        defaults.set(data, forKey: "cotabbyPerAppShortcutOverrides")
 
-        let model = SuggestionSettingsModel(configuration: .standard, userDefaults: defaults)
+        let model = makeModel(defaults)
         let restored = try XCTUnwrap(model.perAppShortcutOverrides.first)
+        XCTAssertEqual(model.perAppShortcutOverrides.count, 1)
         XCTAssertEqual(restored.bundleIdentifier, "com.apple.notes")
-        XCTAssertNil(restored.acceptKeyCode)
-        XCTAssertNil(restored.fullAcceptKeyCode)
-    }
-
-    /// A row persisted with a *partial* binding — a key code but no modifiers/label, which
-    /// `ShortcutResolver` would silently ignore — is collapsed to "inherit global" on load so it can't
-    /// show in Settings as a phantom that never fires. The well-formed full-accept binding on the same
-    /// row is preserved.
-    func test_sanitize_collapsesPartialBindingOnLoad() throws {
-        let suiteName = makeSuiteName()
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        let partial = PerAppShortcutOverride(
-            bundleIdentifier: "com.apple.notes",
-            displayName: "Notes",
-            acceptKeyCode: 49, acceptKeyModifiers: nil, acceptKeyLabel: nil,
-            fullAcceptKeyCode: 36, fullAcceptKeyModifiers: [.command], fullAcceptKeyLabel: "⌘Return"
+        XCTAssertEqual(restored.displayName, "Notes")
+        XCTAssertNil(restored.acceptance)
+        XCTAssertEqual(
+            restored.fullAcceptance,
+            .init(keyCode: 36, modifiers: [.command], label: "⌘Return")
         )
-        let data = try JSONEncoder().encode([partial])
-        defaults.set(data, forKey: "cotabbyPerAppShortcutOverrides")
-
-        let model = SuggestionSettingsModel(configuration: .standard, userDefaults: defaults)
-        let restored = try XCTUnwrap(model.perAppShortcutOverrides.first)
-        // The partial accept binding collapses to inherit-global...
-        XCTAssertNil(restored.acceptKeyCode)
-        XCTAssertNil(restored.acceptKeyModifiers)
-        XCTAssertNil(restored.acceptKeyLabel)
-        // ...while the well-formed full-accept binding is preserved.
-        XCTAssertEqual(restored.fullAcceptKeyCode, 36)
-        XCTAssertEqual(restored.fullAcceptKeyModifiers, [.command])
-        XCTAssertEqual(restored.fullAcceptKeyLabel, "⌘Return")
     }
 
-    // MARK: - Helpers
-
-    private func makeSuiteName() -> String {
-        "cotabby.test.perAppOverride.\(UUID().uuidString)"
+    private func makeModel(_ defaults: UserDefaults? = nil) -> SuggestionSettingsModel {
+        SuggestionSettingsModel(
+            configuration: .standard,
+            userDefaults: defaults ?? makeIsolatedDefaults()
+        )
     }
 
-    private func makeModel(suiteName: String? = nil) -> SuggestionSettingsModel {
-        let name = suiteName ?? makeSuiteName()
-        let defaults = UserDefaults(suiteName: name)!
-        // Don't blow away the suite when an explicit suiteName was passed — that's the cross-launch
-        // test using two model instances against the same defaults.
-        if suiteName == nil {
-            defaults.removePersistentDomain(forName: name)
+    private func makeIsolatedDefaults() -> UserDefaults {
+        let suiteName = "cotabby.test.perAppOverride.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: suiteName)
         }
-        return SuggestionSettingsModel(configuration: .standard, userDefaults: defaults)
+        return defaults
     }
 }

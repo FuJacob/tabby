@@ -104,9 +104,7 @@ struct ShortcutsPaneView: View {
                 }
                 .settingsItem(.acceptEntireSuggestion)
 
-                // No factory default — the hotkey is opt-in, so the only "reset" gesture that
-                // makes sense is "unbind", which the Clear button already covers. Passing
-                // `onReset: nil` hides the Reset button entirely instead of making it a duplicate.
+                // The opt-in toggle has no factory binding; Clear is its only reset action.
                 LabeledContent {
                     KeybindRow(
                         label: suggestionSettings.globalToggleKeyLabel,

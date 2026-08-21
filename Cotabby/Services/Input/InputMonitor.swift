@@ -64,10 +64,7 @@ final class InputMonitor {
     /// event, so this closure is a fast, side-effect-free read.
     var emojiCaptureKeyDecider: (@MainActor (InputMonitorKeyEvent) -> InputMonitorAcceptTapDecision)?
 
-    /// Reads the current word-accept binding (key code + required modifiers) from the model at event
-    /// time, avoiding Combine delivery lag between settings changes and the event classifier. The two
-    /// fields are returned together so a per-app override is scanned at most once per binding and the
-    /// key code and its modifiers can never come from two different resolutions.
+    /// Reads the current word-accept binding atomically at event time.
     var acceptanceBindingProvider: @MainActor () -> (keyCode: CGKeyCode, modifiers: ShortcutModifierMask) = {
         (48, [])
     }
@@ -722,9 +719,7 @@ final class InputMonitor {
     private func acceptanceKind(for keyEvent: InputMonitorKeyEvent) -> CapturedInputEvent.Kind? {
         let eventModifiers = ShortcutModifierMask(eventFlags: keyEvent.flags)
 
-        // Read shortcut state from the model at event time so changes are always current. Each binding
-        // resolves once as a unit, so the key code and modifiers can never disagree and a per-app
-        // override is scanned at most once per binding per keystroke.
+        // Read each binding once so its key code and modifiers come from the same resolution.
         let fullAccept = fullAcceptanceBindingProvider()
         let accept = acceptanceBindingProvider()
 

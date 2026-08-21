@@ -23,8 +23,7 @@ struct SuggestionOverlayGeometry: Equatable, Sendable {
     let caretRect: CGRect
     let inputFrameRect: CGRect?
     let caretQuality: CaretGeometryQuality
-    /// Bundle identifier captured with the suggestion context. Presentation resolves per-app
-    /// shortcuts from this value so the hint and the accepted key describe the same host app.
+    /// Host identity used to resolve presentation that varies by app.
     let bundleIdentifier: String?
     /// True when the caret is at the end of its line: only whitespace, if anything, precedes the
     /// next line break. When false, real characters follow the caret on this line, so the

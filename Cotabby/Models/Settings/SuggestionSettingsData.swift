@@ -86,7 +86,7 @@ struct SuggestionInlineFeatureSettings: Equatable {
 
 /// One complete physical key binding. Keeping key code, modifiers, and label together prevents a
 /// domain value from representing a half-updated shortcut.
-struct SuggestionShortcutBindingSettings: Equatable {
+struct SuggestionShortcutBindingSettings: Codable, Equatable, Sendable {
     var keyCode: CGKeyCode
     var modifiers: ShortcutModifierMask
     var label: String
