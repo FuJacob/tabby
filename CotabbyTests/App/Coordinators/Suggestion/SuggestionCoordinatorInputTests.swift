@@ -310,7 +310,6 @@ final class SuggestionCoordinatorInputTests: XCTestCase {
     // MARK: - Low Power Mode changes
 
     func test_lowPowerModePublisher_disablesPipelineWhenActiveAndAutoDisableEnabled() {
-        // The fixture default (`isLowPowerModeAutoDisableEnabled: true`) mirrors production.
         let rig = retained(makeCoordinatorRig())
 
         rig.lowPowerModeProvider.setLowPowerModeEnabled(true)
@@ -329,11 +328,7 @@ final class SuggestionCoordinatorInputTests: XCTestCase {
 
         rig.lowPowerModeProvider.setLowPowerModeEnabled(true)
 
-        XCTAssertEqual(
-            rig.coordinator.state,
-            .idle,
-            "Opting out must keep autocomplete running in Low Power Mode"
-        )
+        XCTAssertEqual(rig.coordinator.state, .idle)
     }
 
     func test_lowPowerModePublisher_reenablesPipelineWhenModeTurnsOff() {
@@ -345,7 +340,7 @@ final class SuggestionCoordinatorInputTests: XCTestCase {
         XCTAssertEqual(rig.coordinator.state, .idle)
         XCTAssertFalse(
             rig.visualContext.startedSessions.isEmpty,
-            "Leaving Low Power Mode should resume context capture"
+            "Expected visual context to restart"
         )
     }
 

@@ -631,9 +631,7 @@ final class SuggestionSettingsModelTests: XCTestCase {
         XCTAssertEqual(snapshots.last?.customWordCountRange, SuggestionWordRange(lowWords: 2, highWords: 50))
         XCTAssertEqual(snapshots.last?.isUsingCustomWordCountRange, true)
 
-        // Regression guard for the grouped publisher this setting shares with `extendedContext` and
-        // `suggestInIntegratedTerminals`: a miswired tuple destructure would silently carry a stale
-        // or swapped value instead of failing to compile.
+        // The fourth grouped publisher must map to the matching snapshot field.
         XCTAssertEqual(snapshots.last?.isLowPowerModeAutoDisableEnabled, true)
         model.setLowPowerModeAutoDisableEnabled(false)
         XCTAssertEqual(snapshots.last?.isLowPowerModeAutoDisableEnabled, false)

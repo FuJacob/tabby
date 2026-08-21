@@ -22,9 +22,7 @@ protocol SuggestionPermissionProviding: AnyObject {
     var screenRecordingGrantedPublisher: AnyPublisher<Bool, Never> { get }
 }
 
-/// Live OS-level Low Power Mode state: a synchronous read for the initial gate plus a changes-only
-/// stream for later transitions. Keeping those roles explicit prevents a subscriber from having to
-/// guess whether the publisher begins with a bootstrap value or its first real OS change.
+/// Supplies the initial Low Power Mode value separately from its changes-only stream.
 @MainActor
 protocol SuggestionLowPowerModeProviding: AnyObject {
     var isLowPowerModeEnabled: Bool { get }

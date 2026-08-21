@@ -24,9 +24,7 @@ final class CotabbyAppEnvironment {
     let openAICompatibleConnectionModel: OpenAICompatibleConnectionModel
     let foundationModelAvailabilityService: FoundationModelAvailabilityService
     let powerSourceMonitor: PowerSourceMonitor
-    /// Owned here (not just inside `SuggestionCoordinator`) for the same reason as
-    /// `powerSourceMonitor`: a single long-lived instance shared for the app's lifetime rather than
-    /// re-created per observer.
+    /// Process-lifetime Low Power Mode observer shared with suggestion orchestration.
     let lowPowerModeMonitor: LowPowerModeMonitor
     /// Detects when a composing input method (Japanese kana, Chinese pinyin, Korean hangul, ...) is
     /// active so `SuggestionInserter` commits accepted text through an IME-safe path instead of a

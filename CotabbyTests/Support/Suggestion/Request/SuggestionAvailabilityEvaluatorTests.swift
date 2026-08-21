@@ -146,7 +146,7 @@ final class SuggestionAvailabilityEvaluatorTests: XCTestCase {
 
     // MARK: - Low Power Mode gating
 
-    func test_disabledReason_whenLowPowerModeActiveAndAutoDisableEnabled_returnsFixedCopy() {
+    func test_disabledReason_whenLowPowerModeActiveAndAutoDisableEnabled_returnsLowPowerReason() {
         let reason = SuggestionAvailabilityEvaluator.disabledReason(
             globallyEnabled: true,
             isLowPowerModeActive: true,
@@ -158,8 +158,6 @@ final class SuggestionAvailabilityEvaluatorTests: XCTestCase {
         XCTAssertEqual(reason, "Cotabby is paused because Low Power Mode is on.")
     }
 
-    /// The user opted out of auto-pausing: Low Power Mode being active must not suppress
-    /// suggestions when the toggle is off.
     func test_disabledReason_whenLowPowerModeActiveButAutoDisableOptedOut_returnsNil() {
         let reason = SuggestionAvailabilityEvaluator.disabledReason(
             globallyEnabled: true,
@@ -172,7 +170,6 @@ final class SuggestionAvailabilityEvaluatorTests: XCTestCase {
         XCTAssertNil(reason, "Opting out should let suggestions run in Low Power Mode")
     }
 
-    /// The setting is on, but the Mac is not currently in Low Power Mode: nothing should suppress.
     func test_disabledReason_whenAutoDisableEnabledButLowPowerModeInactive_returnsNil() {
         let reason = SuggestionAvailabilityEvaluator.disabledReason(
             globallyEnabled: true,
@@ -185,9 +182,7 @@ final class SuggestionAvailabilityEvaluatorTests: XCTestCase {
         XCTAssertNil(reason)
     }
 
-    /// Same tier as the global-off and temporarily-paused checks: Low Power Mode should win over a
-    /// per-app disable reason so the user sees the more fundamental cause.
-    func test_disabledReason_lowPowerMode_winsOverAppDisabled() {
+    func test_disabledReason_lowPowerModeTakesPrecedenceOverDisabledApp() {
         let reason = SuggestionAvailabilityEvaluator.disabledReason(
             globallyEnabled: true,
             isLowPowerModeActive: true,
@@ -201,7 +196,7 @@ final class SuggestionAvailabilityEvaluatorTests: XCTestCase {
     }
 
     func test_shouldSchedulePrediction_falseWhenLowPowerModeActiveAndAutoDisableEnabled() {
-        let ok = SuggestionAvailabilityEvaluator.shouldSchedulePrediction(
+        let shouldSchedule = SuggestionAvailabilityEvaluator.shouldSchedulePrediction(
             globallyEnabled: true,
             isLowPowerModeActive: true,
             isLowPowerModeAutoDisableEnabled: true,
@@ -209,11 +204,11 @@ final class SuggestionAvailabilityEvaluatorTests: XCTestCase {
             focusSnapshot: makeSnapshot(capability: .supported)
         )
 
-        XCTAssertFalse(ok)
+        XCTAssertFalse(shouldSchedule)
     }
 
     func test_shouldCaptureVisualContext_falseWhenLowPowerModeActiveAndAutoDisableEnabled() {
-        let ok = SuggestionAvailabilityEvaluator.shouldCaptureVisualContext(
+        let shouldCapture = SuggestionAvailabilityEvaluator.shouldCaptureVisualContext(
             globallyEnabled: true,
             isLowPowerModeActive: true,
             isLowPowerModeAutoDisableEnabled: true,
@@ -223,7 +218,7 @@ final class SuggestionAvailabilityEvaluatorTests: XCTestCase {
             isFastModeEnabled: false
         )
 
-        XCTAssertFalse(ok)
+        XCTAssertFalse(shouldCapture)
     }
 
     func test_disabledReason_whenFocusedDomainIsDisabled_returnsSiteReason() {

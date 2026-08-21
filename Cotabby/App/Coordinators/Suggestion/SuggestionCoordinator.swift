@@ -24,8 +24,7 @@ final class SuggestionCoordinator: ObservableObject {
     // Core collaborators. The coordinator depends on capability-shaped protocols here so its
     // orchestration logic stays separated from concrete service implementations.
     let permissionManager: any SuggestionPermissionProviding
-    /// Live macOS Low Power Mode state. Read (alongside the matching settings toggle) by the
-    /// availability gate so predictions and visual context both pause automatically to save battery.
+    /// Provides the initial Low Power Mode state and subsequent transitions.
     let lowPowerModeProvider: any SuggestionLowPowerModeProviding
     let focusModel: any SuggestionFocusProviding
     let inputMonitor: any SuggestionInputMonitoring

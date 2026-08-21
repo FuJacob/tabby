@@ -86,9 +86,7 @@ final class SuggestionSettingsModel: ObservableObject {
     /// default user never pays any extra storage or write cost — recording only kicks in once the
     /// user opts in from Settings.
     @Published private(set) var isPerformanceTrackingEnabled: Bool
-    /// Whether Cotabby automatically pauses suggestions while macOS Low Power Mode is on. Defaults to
-    /// true so a fresh install saves battery out of the box; read live alongside `LowPowerModeMonitor`
-    /// by `SuggestionAvailabilityEvaluator`.
+    /// UI-facing preference for pausing suggestions in Low Power Mode.
     @Published private(set) var isLowPowerModeAutoDisableEnabled: Bool
     /// Whether Cotabby's status item is inserted into the menu bar. The process and suggestion
     /// pipeline remain active when hidden; launching the app again opens Settings as the recovery path.
@@ -1378,9 +1376,7 @@ extension SuggestionSettingsModel: SuggestionSettingsProviding {
             $customWordCountLowWords,
             $customWordCountHighWords
         )
-        // `extendedContext` shares its outer slot with `suggestInIntegratedTerminals`,
-        // `isSurfaceContextEnabled`, and `isLowPowerModeAutoDisableEnabled` via one grouped
-        // `CombineLatest4` so new toggles cost no extra top-level slot (the outer is at the cap).
+        // The outer `CombineLatest4` is full, so these settings share its grouped publisher slot.
         return Publishers.CombineLatest4(
             primary,
             $acceptanceGranularity,

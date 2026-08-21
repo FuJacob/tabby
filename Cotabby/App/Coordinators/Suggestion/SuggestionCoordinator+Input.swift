@@ -35,8 +35,7 @@ extension SuggestionCoordinator {
         }
     }
 
-    /// Reconciles coordinator state whenever macOS Low Power Mode toggles, so autocomplete pauses or
-    /// resumes live without waiting for the next keystroke or focus change to notice.
+    /// Re-evaluates the pipeline immediately instead of waiting for another input or focus event.
     func handleLowPowerModeChange() {
         CotabbyLogger.suggestion.debug("Low Power Mode state changed, reconciling")
         reconcileWithCurrentEnvironment()

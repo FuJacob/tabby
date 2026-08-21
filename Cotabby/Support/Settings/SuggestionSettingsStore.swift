@@ -337,9 +337,7 @@ struct SuggestionSettingsStore {
         // in from the Performance pane.
         let resolvedPerformanceTrackingEnabled =
             userDefaults.object(forKey: Self.performanceTrackingEnabledDefaultsKey) as? Bool ?? false
-        // Defaults to true: a fresh install pauses autocomplete under Low Power Mode out of the box
-        // to avoid fighting the OS's own battery-saving throttling. Existing installs (no key) get
-        // the same, matching the issue's ask for this to be automatic with an opt-out.
+        // Existing installs lack this key; defaulting to true keeps the feature opt-out.
         let resolvedLowPowerModeAutoDisableEnabled =
             userDefaults.object(forKey: Self.lowPowerModeAutoDisableDefaultsKey) as? Bool ?? true
         // Existing installs keep the status item unless the user explicitly hides it. Hiding the

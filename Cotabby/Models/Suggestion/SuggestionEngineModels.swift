@@ -110,9 +110,7 @@ struct SuggestionSettingsSnapshot: Equatable, Sendable {
     /// xterm.js surfaces). Power users can opt back in. Travels in the snapshot so the availability
     /// gate sees the live value alongside the other "where Cotabby runs" rules.
     let suggestInIntegratedTerminals: Bool
-    /// When true (the default), the availability gate suppresses suggestions while macOS Low Power
-    /// Mode is on (see `LowPowerModeMonitor`). Travels in the snapshot so the gate reads the live
-    /// setting value alongside the other "where Cotabby runs" rules.
+    /// Whether the availability gate pauses suggestions during Low Power Mode.
     let isLowPowerModeAutoDisableEnabled: Bool
     let selectedEngine: SuggestionEngineKind
     let selectedWordCountPreset: SuggestionWordCountPreset

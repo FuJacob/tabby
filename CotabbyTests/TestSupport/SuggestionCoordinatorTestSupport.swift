@@ -40,8 +40,7 @@ final class RigLowPowerModeProvider: SuggestionLowPowerModeProviding {
         subject.eraseToAnyPublisher()
     }
 
-    /// Updates both halves of the provider contract so tests exercise the same live subscription
-    /// path as production instead of calling the coordinator's event handler directly.
+    /// Updates current state before publishing its matching transition.
     func setLowPowerModeEnabled(_ enabled: Bool) {
         guard isLowPowerModeEnabled != enabled else {
             return

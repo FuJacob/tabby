@@ -327,7 +327,7 @@ enum SettingsItem: String, CaseIterable, Identifiable {
         case .appleIntelligenceAvailability: return "Whether this Mac can run Apple Intelligence."
         case .modelStatus: return "Whether the local model is loaded and ready."
         case .selectedModel: return "Which downloaded model generates suggestions."
-        case .lowPowerModeAutoDisable: return "Pause suggestions automatically to save battery."
+        case .lowPowerModeAutoDisable: return "Pause suggestions while Low Power Mode is active."
         case .powerBasedModelSwitching: return "Use a different engine or model by power source."
         case .batteryModel: return "Engine and model used while on battery."
         case .pluggedInModel: return "Engine and model used while plugged in."
@@ -490,8 +490,7 @@ enum SettingsItem: String, CaseIterable, Identifiable {
             return ["model", "gguf", "pick", "selected", "active model", "choose model",
                     "current model", "default model"]
         case .lowPowerModeAutoDisable:
-            return ["low power mode", "power saving", "battery saver", "pause", "disable",
-                    "throttle", "conserve battery", "power", "automatic", "auto disable"]
+            return ["low power mode", "battery saver", "pause", "power", "automatic", "auto disable"]
         case .powerBasedModelSwitching:
             return ["power", "battery", "plugged", "energy", "ac", "charger",
                     "switch model", "power source", "auto switch", "adaptive",

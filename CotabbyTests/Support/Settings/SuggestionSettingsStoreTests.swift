@@ -156,8 +156,6 @@ final class SuggestionSettingsStoreTests: XCTestCase {
         XCTAssertTrue(data.isMenuBarIconVisible)
     }
 
-    /// A fresh install pauses autocomplete in Low Power Mode out of the box, matching the issue's
-    /// ask for this to be automatic with an opt-out rather than opt-in.
     func test_load_lowPowerModeAutoDisableDefaultsOn() async {
         let defaults = makeIsolatedDefaults()
 
