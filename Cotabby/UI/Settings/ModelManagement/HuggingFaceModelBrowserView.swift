@@ -130,7 +130,10 @@ struct HuggingFaceModelBrowserView: View {
             case .loaded(let loadedRepoId, let ggufFiles) where loadedRepoId == repoId:
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(ggufFiles) { file in
-                        if let model = searchService.makeDownloadableModel(from: file, repoId: repoId) {
+                        if let model = HuggingFaceSearchService.makeDownloadableModel(
+                            from: file,
+                            repoId: repoId
+                        ) {
                             HFFileRow(
                                 file: file,
                                 repoId: repoId,
@@ -229,9 +232,9 @@ private struct HFFileRow: View {
                         .font(.system(size: 12, weight: .medium))
                         .lineLimit(1)
 
-                    Text(file.sizeLabel)
+                    Text(fileDetailText)
                         .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(fileDetailColor)
                 }
 
                 Spacer(minLength: 0)
@@ -293,6 +296,7 @@ private struct HFFileRow: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Pause download")
                     .help("Pause download")
 
                     Button {
@@ -303,6 +307,7 @@ private struct HFFileRow: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Cancel download")
                     .help("Cancel download")
                 }
 
@@ -323,6 +328,7 @@ private struct HFFileRow: View {
                             .foregroundStyle(.blue)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Resume download")
                     .help("Resume download")
 
                     Button {
@@ -333,6 +339,7 @@ private struct HFFileRow: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Cancel download")
                     .help("Cancel download")
                 }
 
@@ -351,5 +358,21 @@ private struct HFFileRow: View {
                 .controlSize(.small)
             }
         }
+    }
+
+    private var fileDetailText: String {
+        switch state {
+        case .downloading, .paused, .failed:
+            return "\(file.sizeLabel) • \(state.statusText)"
+        case .idle, .downloaded:
+            return file.sizeLabel
+        }
+    }
+
+    private var fileDetailColor: Color {
+        if case .failed = state {
+            return .red
+        }
+        return .secondary
     }
 }

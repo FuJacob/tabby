@@ -16,15 +16,6 @@ final class Aria2LocatorTests: XCTestCase {
         XCTAssertNil(Aria2Locator.executableURL(fileManager: stub))
     }
 
-    func test_executableURL_prioritizesUserDownloadedBinary() {
-        let stub = StubExecutableFileManager()
-        let userURL = Aria2Locator.userDownloadedBinaryURL
-        stub.executablePaths = [userURL.path, "/opt/homebrew/bin/aria2c"]
-
-        let resolved = Aria2Locator.executableURL(fileManager: stub)
-        XCTAssertEqual(resolved?.path, userURL.path)
-    }
-
     func test_executableURL_resolvesHomebrewPathWhenUserBinaryAbsent() {
         let stub = StubExecutableFileManager()
         stub.executablePaths = ["/opt/homebrew/bin/aria2c"]

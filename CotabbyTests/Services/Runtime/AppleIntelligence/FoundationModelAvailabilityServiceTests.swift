@@ -86,30 +86,4 @@ final class FoundationModelAvailabilityServiceTests: XCTestCase {
         XCTAssertFalse(service.isAvailable)
         XCTAssertEqual(service.userVisibleMessage, "User disabled Apple Intelligence.")
     }
-
-    func test_detectionInfo_reportsHostOSAndAvailability() {
-        let (service, _) = makeService(initial: .available)
-        let info = service.detectionInfo
-
-        XCTAssertFalse(info.macosVersion.isEmpty)
-        XCTAssertEqual(info.availabilityState, .available)
-    }
-
-    func test_detectionInfo_summaryFormatting() {
-        let infoAvailable = FoundationModelAvailabilityService.DetectionInfo(
-            macosVersion: "26.0",
-            isEligibleOS: true,
-            hasFramework: true,
-            availabilityState: .available
-        )
-        XCTAssertTrue(infoAvailable.summary.contains("available"))
-
-        let infoUnsupported = FoundationModelAvailabilityService.DetectionInfo(
-            macosVersion: "14.5",
-            isEligibleOS: false,
-            hasFramework: false,
-            availabilityState: .unavailable("Unsupported OS")
-        )
-        XCTAssertTrue(infoUnsupported.summary.contains("requires macOS 26 or later"))
-    }
 }

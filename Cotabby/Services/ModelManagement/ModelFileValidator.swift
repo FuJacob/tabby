@@ -19,7 +19,7 @@ import CryptoKit
 /// expected value is nil, the validator no-ops — better than failing every
 /// install just because metadata wasn't filled in yet. The catalog is the
 /// authoritative source of "what should be true about this file."
-enum ModelFileValidator {
+nonisolated enum ModelFileValidator {
 
     enum ValidationError: LocalizedError {
         case sizeMismatch(expected: Int64, actual: Int64)
@@ -118,6 +118,9 @@ enum ModelFileValidator {
         // 1 MB keeps memory bounded while avoiding excessive read syscalls.
         let chunkSize = 1024 * 1024
         while true {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
             let chunk: Data
             do {
                 chunk = try handle.read(upToCount: chunkSize) ?? Data()

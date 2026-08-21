@@ -1,14 +1,12 @@
 import Foundation
-import Logging
 
-/// Errors that can occur during aria2c-managed downloads.
-public enum Aria2DownloadError: LocalizedError, Equatable {
+nonisolated enum Aria2DownloadError: LocalizedError, Equatable {
     case executableNotFound
     case cancelled
     case paused
     case processFailed(exitCode: Int32, message: String)
 
-    public var errorDescription: String? {
+    var errorDescription: String? {
         switch self {
         case .executableNotFound:
             return "aria2c executable was not found on the system."
@@ -22,212 +20,254 @@ public enum Aria2DownloadError: LocalizedError, Equatable {
     }
 }
 
-/// Result returned upon successful completion of an aria2c download.
-public struct Aria2DownloadResult {
-    public let downloadedFileURL: URL
-    public let stagingDirectoryURL: URL
-}
-
-/// Executes and monitors an `aria2c` subprocess for multi-connection resumable downloads.
-///
-/// Why this class exists:
-/// `aria2c` provides segmented HTTP downloads (up to 8 parallel streams) and on-disk `.aria2` chunk metadata.
-/// This service encapsulates `Foundation.Process` management, stdout progress pipe streaming,
-/// and safe pause/resume/cancellation state transitions without exposing subprocess details to callers.
-///
-/// Collaborators:
-/// - `Aria2Locator`: resolves the executable path.
-/// - `Aria2OutputParser`: parses stdout lines into `Aria2Progress`.
-/// - `ModelDownloadManager`: owns active `Aria2DownloadService` instances and binds progress to SwiftUI.
-public final class Aria2DownloadService: @unchecked Sendable {
+/// Owns one aria2c subprocess and translates its output and termination into app-level progress.
+/// `ModelDownloadManager` creates a fresh instance for each active model download.
+nonisolated final class Aria2DownloadService: @unchecked Sendable {
     private let progressHandler: @Sendable (Aria2Progress) -> Void
-    private let lock = NSLock()
-    private var process: Process?
-    private var isUserPaused = false
-    private var isUserCancelled = false
+    private let processState = Aria2ProcessState()
 
-    public init(progressHandler: @escaping @Sendable (Aria2Progress) -> Void) {
+    init(progressHandler: @escaping @Sendable (Aria2Progress) -> Void) {
         self.progressHandler = progressHandler
     }
 
-    /// Downloads a model file from `url` into a dedicated staging directory.
-    ///
-    /// - Parameters:
-    ///   - url: Remote URL to download.
-    ///   - filename: Target model filename.
-    ///   - stagingDirectory: Isolated staging directory for this download.
-    /// - Returns: `Aria2DownloadResult` with the location of the completed file.
-    public func download(
+    /// Downloads into a model-specific staging directory and returns the completed file URL.
+    func download(
         from url: URL,
         filename: String,
         stagingDirectory: URL,
         executableURL: URL? = nil,
-        locator: () -> URL? = { Aria2Locator.executableURL() }
-    ) async throws -> Aria2DownloadResult {
-        guard let aria2Executable = executableURL ?? locator() else {
+        locator: @Sendable () -> URL? = { Aria2Locator.executableURL() }
+    ) async throws -> URL {
+        guard let executableURL = executableURL ?? locator() else {
             throw Aria2DownloadError.executableNotFound
         }
 
-        try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
-
-        let targetFileURL = stagingDirectory.appendingPathComponent(filename, isDirectory: false)
+        try FileManager.default.createDirectory(
+            at: stagingDirectory,
+            withIntermediateDirectories: true
+        )
+        let targetURL = stagingDirectory.appendingPathComponent(filename, isDirectory: false)
+        let process = Self.makeProcess(
+            executableURL: executableURL,
+            sourceURL: url,
+            filename: filename,
+            stagingDirectory: stagingDirectory
+        )
 
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                let proc = Process()
-                proc.executableURL = aria2Executable
+            try await waitForProcess(process, targetURL: targetURL)
+        } onCancel: {
+            processState.cancel()
+        }
+    }
 
-                // Arguments:
-                // -c: Continue partial download if .aria2 file exists
-                // -s 8: Split file into 8 segments
-                // -x 8: Use up to 8 connections per server
-                // -k 1M: Minimum split size is 1MB
-                // --summary-interval=1: Emit progress to stdout every second
-                // --allow-overwrite=true: Overwrite target if needed
-                // --auto-file-renaming=false: Do not append .1 to filename
-                // --dir: Destination directory
-                // --out: Destination filename
-                proc.arguments = [
-                    "-c",
-                    "-s", "8",
-                    "-x", "8",
-                    "-k", "1M",
-                    "--summary-interval=1",
-                    "--allow-overwrite=true",
-                    "--auto-file-renaming=false",
-                    "--dir=\(stagingDirectory.path)",
-                    "--out=\(filename)",
-                    url.absoluteString
-                ]
+    /// SIGINT asks aria2c to flush its `.aria2` control file before terminating.
+    func pause() {
+        processState.pause()
+    }
 
-                let outputPipe = Pipe()
-                let errorPipe = Pipe()
-                proc.standardOutput = outputPipe
-                proc.standardError = errorPipe
+    func cancel() {
+        processState.cancel()
+    }
 
-                var capturedErrorMessage = ""
-                let errorLock = NSLock()
+    private func waitForProcess(_ process: Process, targetURL: URL) async throws -> URL {
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        let outputBuffer = LockedTextBuffer()
+        let errorBuffer = LockedTextBuffer()
 
-                // Read stderr in background for error diagnostics
-                errorPipe.fileHandleForReading.readabilityHandler = { handle in
-                    let data = handle.availableData
-                    if !data.isEmpty, let str = String(data: data, encoding: .utf8) {
-                        errorLock.lock()
-                        capturedErrorMessage += str
-                        errorLock.unlock()
-                    }
-                }
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
 
-                // Read stdout line by line and feed progress parser
-                var outputBuffer = ""
-                outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-                    guard let self else { return }
-                    let data = handle.availableData
-                    guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+        outputPipe.fileHandleForReading.readabilityHandler = { [progressHandler] handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else {
+                return
+            }
 
-                    outputBuffer += text
-                    let lines = outputBuffer.components(separatedBy: .newlines)
-                    if lines.count > 1 {
-                        for line in lines.dropLast() {
-                            if let progress = Aria2OutputParser.parse(line: line) {
-                                self.progressHandler(progress)
-                            }
-                        }
-                        outputBuffer = lines.last ?? ""
-                    }
-                }
-
-                proc.terminationHandler = { [weak self] p in
-                    outputPipe.fileHandleForReading.readabilityHandler = nil
-                    errorPipe.fileHandleForReading.readabilityHandler = nil
-
-                    guard let self else { return }
-                    self.lock.lock()
-                    let wasPaused = self.isUserPaused
-                    let wasCancelled = self.isUserCancelled
-                    self.process = nil
-                    self.lock.unlock()
-
-                    if wasPaused {
-                        continuation.resume(throwing: Aria2DownloadError.paused)
-                        return
-                    }
-
-                    if wasCancelled {
-                        continuation.resume(throwing: Aria2DownloadError.cancelled)
-                        return
-                    }
-
-                    if p.terminationStatus == 0 {
-                        continuation.resume(
-                            returning: Aria2DownloadResult(
-                                downloadedFileURL: targetFileURL,
-                                stagingDirectoryURL: stagingDirectory
-                            )
-                        )
-                    } else {
-                        errorLock.lock()
-                        let msg = capturedErrorMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-                        errorLock.unlock()
-                        continuation.resume(
-                            throwing: Aria2DownloadError.processFailed(
-                                exitCode: p.terminationStatus,
-                                message: msg.isEmpty ? "Process terminated with exit code \(p.terminationStatus)" : msg
-                            )
-                        )
-                    }
-                }
-
-                self.lock.lock()
-                if self.isUserCancelled {
-                    self.lock.unlock()
-                    continuation.resume(throwing: Aria2DownloadError.cancelled)
-                    return
-                }
-                if self.isUserPaused {
-                    self.lock.unlock()
-                    continuation.resume(throwing: Aria2DownloadError.paused)
-                    return
-                }
-                self.process = proc
-                self.lock.unlock()
-
-                do {
-                    try proc.run()
-                } catch {
-                    self.lock.lock()
-                    self.process = nil
-                    self.lock.unlock()
-                    continuation.resume(throwing: error)
+            for line in outputBuffer.appendAndTakeCompleteLines(text) {
+                if let progress = Aria2OutputParser.parse(line: line) {
+                    progressHandler(progress)
                 }
             }
-        } onCancel: { [weak self] in
-            self?.cancel()
+        }
+
+        errorPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else {
+                return
+            }
+            errorBuffer.append(text)
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            process.terminationHandler = { [processState] terminatedProcess in
+                outputPipe.fileHandleForReading.readabilityHandler = nil
+                errorPipe.fileHandleForReading.readabilityHandler = nil
+
+                continuation.resume(
+                    with: Self.completionResult(
+                        status: terminatedProcess.terminationStatus,
+                        requestedOutcome: processState.finish(),
+                        errorMessage: errorBuffer.value,
+                        targetURL: targetURL
+                    )
+                )
+            }
+
+            do {
+                // Launching while holding the state lock closes the cancel-before-run race:
+                // cancellation either wins before launch or sees a running process to terminate.
+                try processState.launch(process)
+            } catch {
+                outputPipe.fileHandleForReading.readabilityHandler = nil
+                errorPipe.fileHandleForReading.readabilityHandler = nil
+                continuation.resume(throwing: error)
+            }
         }
     }
 
-    /// Pauses the in-flight download gracefully, preserving `.aria2` metadata on disk.
-    public func pause() {
-        lock.lock()
-        isUserPaused = true
-        let proc = process
-        lock.unlock()
+    private static func makeProcess(
+        executableURL: URL,
+        sourceURL: URL,
+        filename: String,
+        stagingDirectory: URL
+    ) -> Process {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = [
+            "-c",
+            "-s", "8",
+            "-x", "8",
+            "-k", "1M",
+            "--summary-interval=1",
+            "--allow-overwrite=true",
+            "--auto-file-renaming=false",
+            "--dir=\(stagingDirectory.path)",
+            "--out=\(filename)",
+            sourceURL.absoluteString
+        ]
+        return process
+    }
 
-        if let proc, proc.isRunning {
-            // Send SIGINT so aria2c flushes its .aria2 control file before exiting
-            proc.interrupt()
+    private static func completionResult(
+        status: Int32,
+        requestedOutcome: Aria2ProcessState.RequestedOutcome?,
+        errorMessage: String,
+        targetURL: URL
+    ) -> Result<URL, Error> {
+        switch requestedOutcome {
+        case .paused:
+            return .failure(Aria2DownloadError.paused)
+        case .cancelled:
+            return .failure(Aria2DownloadError.cancelled)
+        case nil:
+            break
+        }
+
+        guard status == 0 else {
+            let trimmedMessage = errorMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = trimmedMessage.isEmpty
+                ? "Process terminated with exit code \(status)"
+                : trimmedMessage
+            return .failure(Aria2DownloadError.processFailed(exitCode: status, message: message))
+        }
+        return .success(targetURL)
+    }
+}
+
+/// Serializes the cancellation flag, process publication, and launch as one state transition.
+nonisolated private final class Aria2ProcessState: @unchecked Sendable {
+    enum RequestedOutcome: Equatable {
+        case paused
+        case cancelled
+    }
+
+    private let lock = NSLock()
+    private var process: Process?
+    private var requestedOutcome: RequestedOutcome?
+
+    func launch(_ process: Process) throws {
+        try lock.withLock {
+            switch requestedOutcome {
+            case .paused:
+                throw Aria2DownloadError.paused
+            case .cancelled:
+                throw Aria2DownloadError.cancelled
+            case nil:
+                break
+            }
+
+            self.process = process
+            do {
+                try process.run()
+            } catch {
+                self.process = nil
+                throw error
+            }
         }
     }
 
-    /// Cancels the in-flight download immediately.
-    public func cancel() {
-        lock.lock()
-        isUserCancelled = true
-        let proc = process
-        lock.unlock()
+    func finish() -> RequestedOutcome? {
+        lock.withLock {
+            process = nil
+            return requestedOutcome
+        }
+    }
 
-        if let proc, proc.isRunning {
-            proc.terminate()
+    func pause() {
+        request(.paused)
+    }
+
+    func cancel() {
+        request(.cancelled)
+    }
+
+    private func request(_ outcome: RequestedOutcome) {
+        lock.withLock {
+            if requestedOutcome == nil || outcome == .cancelled {
+                requestedOutcome = outcome
+            }
+
+            guard let process, process.isRunning else {
+                return
+            }
+            switch requestedOutcome {
+            case .paused:
+                process.interrupt()
+            case .cancelled:
+                process.terminate()
+            case nil:
+                break
+            }
+        }
+    }
+}
+
+/// File-handle callbacks can arrive on different queues, so partial output is kept behind a lock.
+nonisolated private final class LockedTextBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = ""
+
+    var value: String {
+        lock.withLock { storage }
+    }
+
+    func append(_ text: String) {
+        lock.withLock {
+            storage += text
+        }
+    }
+
+    func appendAndTakeCompleteLines(_ text: String) -> [String] {
+        lock.withLock {
+            storage += text
+            let components = storage.components(separatedBy: .newlines)
+            guard components.count > 1 else {
+                return []
+            }
+            storage = components.last ?? ""
+            return Array(components.dropLast())
         }
     }
 }

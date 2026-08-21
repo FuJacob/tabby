@@ -65,6 +65,17 @@ final class HuggingFaceModelsTests: XCTestCase {
         XCTAssertTrue(url.absoluteString.hasSuffix("?download=true"))
     }
 
+    @MainActor
+    func test_searchService_preservesExactFileSizeForDownloadValidation() throws {
+        let file = makeFile(path: "weights/model.gguf", size: 987_654_321)
+        let model = try XCTUnwrap(
+            HuggingFaceSearchService.makeDownloadableModel(from: file, repoId: "org/repo")
+        )
+
+        XCTAssertEqual(model.filename, "model.gguf")
+        XCTAssertEqual(model.expectedSizeBytes, file.size)
+    }
+
     private func makeFile(path: String = "model.gguf", size: Int64 = 1_073_741_824) -> HFRepoFile {
         HFRepoFile(path: path, size: size)
     }

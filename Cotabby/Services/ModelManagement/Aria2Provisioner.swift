@@ -1,298 +1,194 @@
-import CryptoKit
 import Foundation
 import Logging
 
-/// State of on-demand aria2c binary provisioning.
-public enum Aria2ProvisioningState: Equatable, Sendable {
-    case idle
-    case downloading(progress: Double?)
-    case ready(path: String)
-    case failed(String)
-}
+nonisolated enum Aria2ProvisioningError: LocalizedError, Equatable {
+    case homebrewUnavailable
+    case installFailed
+    case installTimedOut
 
-/// Errors that can occur during aria2c binary provisioning.
-public enum Aria2ProvisioningError: LocalizedError, Equatable {
-    case downloadFailed(String)
-    case extractionFailed(String)
-    case invalidBinary
-    case permissionDenied
-
-    public var errorDescription: String? {
+    var errorDescription: String? {
         switch self {
-        case .downloadFailed(let message):
-            return "Failed to download aria2c binary: \(message)"
-        case .extractionFailed(let message):
-            return "Failed to extract aria2c binary: \(message)"
-        case .invalidBinary:
-            return "Downloaded binary is corrupted or incompatible with this architecture."
-        case .permissionDenied:
-            return "Permission denied while setting executable attributes."
+        case .homebrewUnavailable:
+            return "Homebrew is not available, so Cotabby will use its standard downloader."
+        case .installFailed:
+            return "Homebrew could not install aria2. Cotabby will use its standard downloader."
+        case .installTimedOut:
+            return "Installing aria2 timed out. Cotabby will use its standard downloader."
         }
     }
 }
 
-/// Bottle metadata containing download URL and expected SHA-256 checksum.
-struct Aria2BottleMetadata: Sendable {
-    let downloadURL: URL
-    let expectedSHA256: String
-}
+/// Coalesces one bounded Homebrew installation when aria2c is not already available.
+/// A verified standalone macOS artifact is not published by aria2, so Macs without Homebrew
+/// deliberately fall back to URLSession instead of copying a dynamically linked bottle binary.
+nonisolated final class Aria2Provisioner: @unchecked Sendable {
+    typealias BrewLocator = @Sendable () -> URL?
+    typealias Installer = @Sendable (URL) async throws -> Bool
 
-/// File overview:
-/// Automatically downloads and provisions the `aria2c` standalone binary into
-/// Cotabby's Application Support folder if it is not present on the system.
-///
-/// Why this class exists:
-/// Many users do not have Homebrew or MacPorts installed. Providing on-demand
-/// provisioning ensures all users get high-speed segmented downloads and pause/resume
-/// without needing manual terminal setup.
-///
-/// Collaborators:
-/// - `Aria2Locator`: defines the destination `userDownloadedBinaryURL` and verifies availability.
-/// - `ModelDownloadManager`: triggers automatic provisioning before initiating model downloads.
-public final class Aria2Provisioner: @unchecked Sendable {
-    public static let shared = Aria2Provisioner()
+    static let shared = Aria2Provisioner()
 
     private let fileManager: FileManager
+    private let brewLocator: BrewLocator
+    private let installer: Installer
     private let lock = NSLock()
     private var activeTask: Task<URL, Error>?
 
-    /// Direct prebuilt binary bottle metadata by architecture (ARM64 Apple Silicon / Intel x86_64).
-    static var bottleMetadata: Aria2BottleMetadata {
-        #if arch(arm64)
-        // macOS Apple Silicon arm64 bottle (universal / arm64_sequoia / arm64_sonoma)
-        return Aria2BottleMetadata(
-            downloadURL: URL(string: "https://ghcr.io/v2/homebrew/core/aria2/blobs/sha256:8815b6b79395235863349628dc0d753bbee9069e99d94257b7646ffd85615623")!,
-            expectedSHA256: "8815b6b79395235863349628dc0d753bbee9069e99d94257b7646ffd85615623"
-        )
-        #else
-        // macOS Intel x86_64 bottle
-        return Aria2BottleMetadata(
-            downloadURL: URL(string: "https://ghcr.io/v2/homebrew/core/aria2/blobs/sha256:b88e53b1c54d82af91dea90551fc114b7c02149972d536b9d55a33b12f9a9fd5")!,
-            expectedSHA256: "b88e53b1c54d82af91dea90551fc114b7c02149972d536b9d55a33b12f9a9fd5"
-        )
-        #endif
-    }
-
-    public init(fileManager: FileManager = .default) {
+    init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
+        brewLocator = Self.defaultBrewExecutable
+        installer = Self.installWithHomebrew
     }
 
-    /// Checks if `aria2c` is already available anywhere on the system or locally provisioned.
-    public var isAvailable: Bool {
-        Aria2Locator.isAvailable
+    init(
+        fileManager: FileManager,
+        brewLocator: @escaping BrewLocator,
+        installer: @escaping Installer
+    ) {
+        self.fileManager = fileManager
+        self.brewLocator = brewLocator
+        self.installer = installer
     }
 
-    /// Provisions `aria2c` into `Aria2Locator.userDownloadedBinaryURL` if not already installed.
-    ///
-    /// - Parameter progressHandler: Callback receiving download progress fraction (0.0 to 1.0).
-    /// - Returns: File URL to the provisioned `aria2c` executable.
-    @discardableResult
-    public func provisionIfNeeded(
-        progressHandler: (@Sendable (Double?) -> Void)? = nil
-    ) async throws -> URL {
-        if let existing = Aria2Locator.executableURL(fileManager: fileManager) {
-            return existing
+    /// Returns an existing executable or installs aria2 once for all concurrent callers.
+    func provisionIfNeeded() async throws -> URL {
+        if let existingURL = Aria2Locator.executableURL(fileManager: fileManager) {
+            return existingURL
         }
 
-        lock.lock()
-        if let ongoing = activeTask {
-            lock.unlock()
-            return try await ongoing.value
-        }
+        let selection: (task: Task<URL, Error>, isOwner: Bool) = lock.withLock {
+            if let activeTask {
+                return (activeTask, false)
+            }
 
-        let task = Task<URL, Error> {
-            try await performProvision(progressHandler: progressHandler)
+            let fileManager = self.fileManager
+            let brewLocator = self.brewLocator
+            let installer = self.installer
+            let task = Task<URL, Error> {
+                try await Self.performProvision(
+                    fileManager: fileManager,
+                    brewLocator: brewLocator,
+                    installer: installer
+                )
+            }
+            activeTask = task
+            return (task, true)
         }
-        activeTask = task
-        lock.unlock()
 
         defer {
-            lock.lock()
-            activeTask = nil
-            lock.unlock()
-        }
-
-        return try await task.value
-    }
-
-    private func performProvision(
-        progressHandler: (@Sendable (Double?) -> Void)?
-    ) async throws -> URL {
-        let destinationURL = Aria2Locator.userDownloadedBinaryURL
-        let binDirectory = destinationURL.deletingLastPathComponent()
-
-        try fileManager.createDirectory(at: binDirectory, withIntermediateDirectories: true)
-
-        // 1. Check if Homebrew exists on the host and can install aria2 quickly
-        if let brewURL = findBrewExecutable() {
-            if (try? await runBrewInstallAria2(brewURL: brewURL)) == true,
-               let installedURL = Aria2Locator.executableURL(fileManager: fileManager) {
-                return installedURL
-            }
-        }
-
-        // 2. Fetch the Homebrew package bottle token and download archive
-        let tempDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        defer { try? fileManager.removeItem(at: tempDir) }
-
-        let archiveURL = tempDir.appendingPathComponent("aria2_package.tar.gz")
-        let metadata = Self.bottleMetadata
-
-        // Fetch auth token for GHCR package registry
-        let token = try await fetchGHCRToken()
-        var request = URLRequest(url: metadata.downloadURL)
-        if let token {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-
-        progressHandler?(0.0)
-        let (tempDownloadedURL, response) = try await URLSession.shared.download(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
-            try? fileManager.removeItem(at: tempDownloadedURL)
-            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw Aria2ProvisioningError.downloadFailed("HTTP \(code)")
-        }
-
-        try fileManager.moveItem(at: tempDownloadedURL, to: archiveURL)
-        progressHandler?(1.0)
-
-        // 3. Verify archive SHA-256 checksum
-        let archiveData = try Data(contentsOf: archiveURL)
-        let computedSHA = SHA256.hash(data: archiveData).map { String(format: "%02x", $0) }.joined()
-        if computedSHA.lowercased() != metadata.expectedSHA256.lowercased() {
-            throw Aria2ProvisioningError.downloadFailed(
-                "SHA256 checksum mismatch: expected \(metadata.expectedSHA256), got \(computedSHA)"
-            )
-        }
-
-        // 4. Extract the aria2c executable from the archive using tar
-        let extractedDir = tempDir.appendingPathComponent("extracted")
-        try fileManager.createDirectory(at: extractedDir, withIntermediateDirectories: true)
-
-        let tarProcess = Process()
-        tarProcess.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-        tarProcess.arguments = ["-xzf", archiveURL.path, "-C", extractedDir.path]
-        tarProcess.standardInput = Pipe()
-        tarProcess.standardOutput = Pipe()
-        tarProcess.standardError = Pipe()
-
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            tarProcess.terminationHandler = { proc in
-                if proc.terminationStatus == 0 {
-                    continuation.resume()
-                } else {
-                    continuation.resume(
-                        throwing: Aria2ProvisioningError.extractionFailed("tar exit code \(proc.terminationStatus)")
-                    )
+            if selection.isOwner {
+                lock.withLock {
+                    activeTask = nil
                 }
             }
-            do {
-                try tarProcess.run()
-            } catch {
-                continuation.resume(throwing: error)
-            }
         }
-
-        // 5. Find the aria2c binary in the extracted contents
-        guard let discoveredBinary = findBinaryInDirectory(named: "aria2c", directory: extractedDir) else {
-            throw Aria2ProvisioningError.invalidBinary
-        }
-
-        // 6. Validate Mach-O binary compatibility
-        try validateMachOBinary(at: discoveredBinary)
-
-        // 7. Promote binary to Cotabby bin directory with executable permissions
-        if fileManager.fileExists(atPath: destinationURL.path) {
-            try? fileManager.removeItem(at: destinationURL)
-        }
-
-        try fileManager.copyItem(at: discoveredBinary, to: destinationURL)
-        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destinationURL.path)
-
-        guard fileManager.isExecutableFile(atPath: destinationURL.path) else {
-            throw Aria2ProvisioningError.permissionDenied
-        }
-
-        CotabbyLogger.runtime.info("Successfully provisioned aria2c to \(destinationURL.path)")
-        return destinationURL
-    }
-
-    private func validateMachOBinary(at url: URL) throws {
-        guard let handle = try? FileHandle(forReadingFrom: url),
-              let header = try? handle.read(upToCount: 4), header.count >= 4 else {
-            throw Aria2ProvisioningError.invalidBinary
-        }
-
-        let magic = header.withUnsafeBytes { $0.load(as: UInt32.self) }
-        // Valid Mach-O 32-bit, 64-bit, universal/FAT, and byte-swapped magics
-        let validMagics: Set<UInt32> = [
-            0xfeedface, 0xfeedfacf, 0xcafebabe, 0xbebafeca,
-            0xcefaedfe, 0xcffaedfe
-        ]
-
-        guard validMagics.contains(magic) else {
-            throw Aria2ProvisioningError.invalidBinary
+        return try await withTaskCancellationHandler {
+            try await selection.task.value
+        } onCancel: {
+            selection.task.cancel()
         }
     }
 
-    private func fetchGHCRToken() async throws -> String? {
-        guard let tokenURL = URL(string: "https://ghcr.io/token?service=ghcr.io&scope=repository:homebrew/core/aria2:pull") else {
-            return nil
+    private static func performProvision(
+        fileManager: FileManager,
+        brewLocator: BrewLocator,
+        installer: Installer
+    ) async throws -> URL {
+        guard let brewURL = brewLocator() else {
+            throw Aria2ProvisioningError.homebrewUnavailable
         }
-        let (data, _) = try await URLSession.shared.data(from: tokenURL)
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let token = json["token"] as? String else {
-            return nil
+        guard try await installer(brewURL),
+              let executableURL = Aria2Locator.executableURL(fileManager: fileManager) else {
+            throw Aria2ProvisioningError.installFailed
         }
-        return token
+
+        CotabbyLogger.runtime.info("Installed aria2 with Homebrew at \(executableURL.path)")
+        return executableURL
     }
 
-    private func findBrewExecutable() -> URL? {
+    private static func defaultBrewExecutable() -> URL? {
+        let fileManager = FileManager.default
         let candidates = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
-        for path in candidates {
-            if fileManager.isExecutableFile(atPath: path) {
-                return URL(fileURLWithPath: path)
-            }
+        for path in candidates where fileManager.isExecutableFile(atPath: path) {
+            return URL(fileURLWithPath: path)
         }
         return nil
     }
 
-    private func runBrewInstallAria2(brewURL: URL) async throws -> Bool {
+    private static func installWithHomebrew(_ brewURL: URL) async throws -> Bool {
+        try await installWithHomebrew(brewURL, timeout: .seconds(120))
+    }
+
+    static func installWithHomebrew(_ brewURL: URL, timeout: Duration) async throws -> Bool {
         let process = Process()
         process.executableURL = brewURL
         process.arguments = ["install", "aria2"]
-        process.standardInput = Pipe()
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
 
-        return try await withCheckedThrowingContinuation { continuation in
-            process.terminationHandler = { proc in
-                continuation.resume(returning: proc.terminationStatus == 0)
+        var environment = ProcessInfo.processInfo.environment
+        environment["HOMEBREW_NO_AUTO_UPDATE"] = "1"
+        environment["HOMEBREW_NO_INSTALL_CLEANUP"] = "1"
+        environment["HOMEBREW_NO_ENV_HINTS"] = "1"
+        environment["NONINTERACTIVE"] = "1"
+        process.environment = environment
+
+        let execution = BlockingProcessExecution(process: process)
+        return try await withTaskCancellationHandler {
+            try await withThrowingTaskGroup(of: Int32.self) { group in
+                group.addTask {
+                    try await Task.detached(priority: .utility) {
+                        try execution.runAndWait()
+                    }.value
+                }
+                group.addTask {
+                    try await Task.sleep(for: timeout)
+                    throw Aria2ProvisioningError.installTimedOut
+                }
+
+                defer {
+                    group.cancelAll()
+                    execution.cancel()
+                }
+                guard let status = try await group.next() else {
+                    throw Aria2ProvisioningError.installFailed
+                }
+                try Task.checkCancellation()
+                return status == 0
             }
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(throwing: error)
-            }
+        } onCancel: {
+            execution.cancel()
         }
     }
+}
 
-    private func findBinaryInDirectory(named binaryName: String, directory: URL) -> URL? {
-        guard let enumerator = fileManager.enumerator(
-            at: directory,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return nil
+/// Runs the blocking `waitUntilExit` call on a detached worker and closes cancellation races.
+nonisolated private final class BlockingProcessExecution: @unchecked Sendable {
+    private let process: Process
+    private let lock = NSLock()
+    private var cancellationRequested = false
+
+    init(process: Process) {
+        self.process = process
+    }
+
+    func runAndWait() throws -> Int32 {
+        try lock.withLock {
+            if cancellationRequested {
+                throw CancellationError()
+            }
+            try process.run()
         }
+        process.waitUntilExit()
+        return process.terminationStatus
+    }
 
-        for case let fileURL as URL in enumerator {
-            if fileURL.lastPathComponent == binaryName {
-                return fileURL
+    func cancel() {
+        lock.withLock {
+            cancellationRequested = true
+            if process.isRunning {
+                process.terminate()
             }
         }
-        return nil
     }
 }

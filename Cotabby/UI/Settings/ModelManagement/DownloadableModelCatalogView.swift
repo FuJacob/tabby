@@ -155,6 +155,7 @@ private struct DownloadableModelRow: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Pause download")
                 .help("Pause download")
 
                 Button {
@@ -165,6 +166,7 @@ private struct DownloadableModelRow: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Cancel download")
                 .help("Cancel download")
             }
         case .paused(let progress):
@@ -184,6 +186,7 @@ private struct DownloadableModelRow: View {
                         .foregroundStyle(.blue)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Resume download")
                 .help("Resume download")
 
                 Button {
@@ -194,6 +197,7 @@ private struct DownloadableModelRow: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Cancel download")
                 .help("Cancel download")
             }
         case .downloaded:

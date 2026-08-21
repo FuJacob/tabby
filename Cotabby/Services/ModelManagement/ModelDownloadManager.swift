@@ -1,6 +1,5 @@
 import AppKit
 import Combine
-import CryptoKit
 import Foundation
 import Logging
 import UniformTypeIdentifiers
@@ -75,8 +74,7 @@ enum ModelDownloadState: Equatable {
 /// Downloads model files on demand into a user-writable runtime directory.
 /// This decouples app shipping from model shipping so model updates do not require app updates.
 ///
-/// Uses `aria2c` multi-connection segmented downloads when available for 4x–10x speedup and native pause/resume,
-/// gracefully falling back to `URLSession` when `aria2c` is not installed on the system.
+/// Uses `aria2c` for segmented, resumable transfers when available and falls back to URLSession.
 @MainActor
 final class ModelDownloadManager: ObservableObject {
     @Published private(set) var modelStates: [String: ModelDownloadState] = [:]
@@ -95,7 +93,7 @@ final class ModelDownloadManager: ObservableObject {
     private var activeSessionDelegates: [String: ModelDownloadSessionDelegate] = [:]
     private var urlSessionResumeDataByFilename: [String: Data] = [:]
 
-    private enum RequestedOutcome {
+    private enum RequestedOutcome: Equatable {
         case paused
         case cancelled
     }
@@ -142,6 +140,7 @@ final class ModelDownloadManager: ObservableObject {
     /// Preserves in-flight `.downloading` and `.paused` states so a refresh during transfer never drops the progress bar.
     func refreshModelStates() {
         recomputeInstalledModelFilenames()
+        let catalogFilenames = Set(models.map(\.filename))
 
         for model in models {
             let currentState = modelStates[model.filename]
@@ -156,6 +155,22 @@ final class ModelDownloadManager: ObservableObject {
                 modelStates[model.filename] = .downloaded
             } else if currentState == .downloaded {
                 modelStates[model.filename] = .idle
+            }
+        }
+
+        // HuggingFace models are created dynamically rather than appearing in the curated catalog.
+        // Reconcile those keys too, or a deleted dynamic model remains stuck in `.downloaded`.
+        let dynamicFilenames = modelStates.keys.filter { !catalogFilenames.contains($0) }
+        for filename in dynamicFilenames {
+            switch modelStates[filename] {
+            case .downloading, .paused:
+                continue
+            case .idle, .downloaded, .failed, nil:
+                if isInstalled(filename: filename) {
+                    modelStates[filename] = .downloaded
+                } else {
+                    modelStates.removeValue(forKey: filename)
+                }
             }
         }
     }
@@ -198,7 +213,6 @@ final class ModelDownloadManager: ObservableObject {
 
         do {
             try FileManager.default.removeItem(at: targetURL)
-            recomputeInstalledModelFilenames()
             refreshModelStates()
             onModelDirectoryChanged?()
         } catch {
@@ -223,7 +237,16 @@ final class ModelDownloadManager: ObservableObject {
             return
         }
 
-        let initialProgress = modelStates[model.filename]?.progressFraction
+        requestedOutcomes.removeValue(forKey: model.filename)
+        let previousModel = activeModelsByFilename[model.filename]
+        let isSameSource = previousModel?.downloadURL == model.downloadURL
+        if let previousModel, !isSameSource {
+            // Resume data is source-specific even when two repositories use the same leaf filename.
+            try? FileManager.default.removeItem(at: aria2StagingDirectoryURL(for: previousModel))
+            urlSessionResumeDataByFilename.removeValue(forKey: model.filename)
+        }
+
+        let initialProgress = isSameSource ? modelStates[model.filename]?.progressFraction : nil
         CotabbyLogger.models.info("Starting download for \(model.filename)")
         modelStates[model.filename] = .downloading(progress: initialProgress)
         activeModelsByFilename[model.filename] = model
@@ -239,6 +262,9 @@ final class ModelDownloadManager: ObservableObject {
 
     /// Pauses an in-flight download, saving partial metadata so it can be resumed later.
     func pause(filename: String) {
+        guard downloadTasks[filename] != nil else {
+            return
+        }
         requestedOutcomes[filename] = .paused
         if let aria2Service = activeAria2Services[filename] {
             aria2Service.pause()
@@ -265,16 +291,20 @@ final class ModelDownloadManager: ObservableObject {
 
         urlSessionResumeDataByFilename.removeValue(forKey: filename)
 
-        // Clean up any model-scoped or legacy aria2 staging directories for this model
-        if let model = activeModelsByFilename[filename] {
-            let stagingDir = aria2StagingDirectoryURL(for: model)
-            try? FileManager.default.removeItem(at: stagingDir)
-        }
-        cleanupAllAria2StagingDirectories(for: filename)
-
         if let task = downloadTasks[filename] {
+            // Let the backend stop before deleting its files. Removing a staging directory while
+            // aria2c is still flushing its control file can recreate debris or corrupt the pause.
             task.cancel()
         } else {
+            if let model = activeModelsByFilename[filename] {
+                removeResumeArtifacts(for: model)
+            } else {
+                try? FileManager.default.removeItem(
+                    at: legacyAria2StagingDirectoryURL(filename: filename)
+                )
+            }
+            requestedOutcomes.removeValue(forKey: filename)
+            activeModelsByFilename.removeValue(forKey: filename)
             modelStates[filename] = isInstalled(filename: filename) ? .downloaded : .idle
         }
     }
@@ -287,6 +317,7 @@ final class ModelDownloadManager: ObservableObject {
                 "Failed to ensure runtime directory before opening: \(error.localizedDescription)",
                 metadata: ["directory": .string(runtimeDirectoryURL.path)]
             )
+            return
         }
 
         NSWorkspace.shared.open(runtimeDirectoryURL)
@@ -313,45 +344,75 @@ final class ModelDownloadManager: ObservableObject {
         let destinationDirectory = runtimeDirectoryURL
 
         Task.detached {
+            let fileManager = FileManager.default
             do {
-                let fileManager = FileManager.default
                 try fileManager.createDirectory(
                     at: destinationDirectory,
                     withIntermediateDirectories: true
                 )
+            } catch {
+                CotabbyLogger.models.error(
+                    "Failed to create the model directory: \(error.localizedDescription)",
+                    metadata: ["destination": .string(destinationDirectory.path)]
+                )
+                return
+            }
 
-                for sourceURL in sourceURLs {
-                    let targetURL = destinationDirectory.appendingPathComponent(
-                        sourceURL.lastPathComponent,
-                        isDirectory: false
-                    )
-
-                    // Skip if source and target refer to the exact same file
-                    if sourceURL.standardizedFileURL == targetURL.standardizedFileURL {
+            var importedAnyModel = false
+            for sourceURL in sourceURLs {
+                let targetURL = destinationDirectory.appendingPathComponent(
+                    sourceURL.lastPathComponent,
+                    isDirectory: false
+                )
+                do {
+                    // Resolve symlinks before comparing. A selected alias can otherwise point at
+                    // the installed target and make a delete-then-copy sequence delete its source.
+                    let canonicalSource = sourceURL.resolvingSymlinksInPath().standardizedFileURL
+                    let canonicalTarget = targetURL.resolvingSymlinksInPath().standardizedFileURL
+                    if canonicalSource == canonicalTarget {
                         continue
                     }
 
+                    // Import is intentionally non-destructive. Replacing an installed multi-GB
+                    // model without an explicit overwrite prompt risks losing a known-good file.
                     if fileManager.fileExists(atPath: targetURL.path) {
-                        try fileManager.removeItem(at: targetURL)
+                        continue
                     }
 
-                    try fileManager.copyItem(at: sourceURL, to: targetURL)
+                    let stagingURL = destinationDirectory.appendingPathComponent(
+                        ".import-\(UUID().uuidString)",
+                        isDirectory: false
+                    )
+                    defer { try? fileManager.removeItem(at: stagingURL) }
+                    try fileManager.copyItem(at: sourceURL, to: stagingURL)
+
+                    // Another import may have won the race while this copy was running.
+                    guard !fileManager.fileExists(atPath: targetURL.path) else {
+                        continue
+                    }
+                    try fileManager.moveItem(at: stagingURL, to: targetURL)
+                    importedAnyModel = true
                     CotabbyLogger.models.info(
                         "Imported model: \(sourceURL.lastPathComponent)",
                         metadata: ["destination": .string(targetURL.path)]
                     )
+                } catch {
+                    CotabbyLogger.models.error(
+                        "Failed to import \(sourceURL.lastPathComponent): \(error.localizedDescription)",
+                        metadata: [
+                            "source": .string(sourceURL.path),
+                            "destination": .string(targetURL.path)
+                        ]
+                    )
                 }
+            }
 
-                await MainActor.run { [weak self] in
-                    self?.recomputeInstalledModelFilenames()
-                    self?.refreshModelStates()
-                    self?.onModelDirectoryChanged?()
-                }
-            } catch {
-                CotabbyLogger.models.error(
-                    "Failed to import models: \(error.localizedDescription)",
-                    metadata: ["destination": .string(destinationDirectory.path)]
-                )
+            guard importedAnyModel else {
+                return
+            }
+            await MainActor.run { [weak self] in
+                self?.refreshModelStates()
+                self?.onModelDirectoryChanged?()
             }
         }
     }
@@ -362,15 +423,17 @@ final class ModelDownloadManager: ObservableObject {
             activeAria2Services.removeValue(forKey: model.filename)
             activeSessionDelegates.removeValue(forKey: model.filename)
             requestedOutcomes.removeValue(forKey: model.filename)
+            switch modelStates[model.filename] {
+            case .paused, .failed:
+                break
+            case .idle, .downloading, .downloaded, nil:
+                activeModelsByFilename.removeValue(forKey: model.filename)
+            }
         }
 
         do {
-            if !Aria2Locator.isAvailable {
-                // Attempt on-demand provisioning of aria2c if not already available on the system
-                try? await Aria2Provisioner.shared.provisionIfNeeded()
-            }
+            let aria2ExecutableURL = await resolveAria2Executable()
 
-            // Check if user requested pause or cancel while provisioning was running
             if requestedOutcomes[model.filename] == .paused {
                 throw Aria2DownloadError.paused
             }
@@ -378,8 +441,8 @@ final class ModelDownloadManager: ObservableObject {
                 throw CancellationError()
             }
 
-            if Aria2Locator.isAvailable {
-                try await performAria2Download(model)
+            if let aria2ExecutableURL {
+                try await performAria2Download(model, executableURL: aria2ExecutableURL)
             } else {
                 try await performURLSessionDownload(model)
             }
@@ -397,9 +460,7 @@ final class ModelDownloadManager: ObservableObject {
                 modelStates[model.filename] = .paused(progress: currentProgress)
             } else if DownloadOutcomeClassifier.isUserCancellation(error) {
                 CotabbyLogger.models.info("Download cancelled by user for \(model.filename)")
-                let stagingDir = aria2StagingDirectoryURL(for: model)
-                try? FileManager.default.removeItem(at: stagingDir)
-                urlSessionResumeDataByFilename.removeValue(forKey: model.filename)
+                removeResumeArtifacts(for: model)
                 modelStates[model.filename] = isInstalled(model: model) ? .downloaded : .idle
             } else {
                 CotabbyLogger.models.error("Download failed for \(model.filename): \(error.localizedDescription)")
@@ -408,7 +469,30 @@ final class ModelDownloadManager: ObservableObject {
         }
     }
 
-    private func performAria2Download(_ model: DownloadableRuntimeModel) async throws {
+    /// Provisioning is an optimization, so a genuine setup failure selects URLSession. Task
+    /// cancellation is also absorbed here long enough for `performDownload` to publish pause or
+    /// cancel according to the manager's recorded user intent.
+    private func resolveAria2Executable() async -> URL? {
+        if let executableURL = Aria2Locator.executableURL() {
+            return executableURL
+        }
+
+        do {
+            return try await Aria2Provisioner.shared.provisionIfNeeded()
+        } catch {
+            if !Task.isCancelled {
+                CotabbyLogger.models.debug(
+                    "aria2 is unavailable; using URLSession: \(error.localizedDescription)"
+                )
+            }
+            return nil
+        }
+    }
+
+    private func performAria2Download(
+        _ model: DownloadableRuntimeModel,
+        executableURL: URL
+    ) async throws {
         try ensureRuntimeDirectoryExists()
         let destinationURL = modelFileURL(filename: model.filename)
         let stagingDir = aria2StagingDirectoryURL(for: model)
@@ -425,28 +509,22 @@ final class ModelDownloadManager: ObservableObject {
         }
         activeAria2Services[model.filename] = service
 
-        let result = try await service.download(
+        let downloadedFile = try await service.download(
             from: model.downloadURL,
             filename: model.filename,
-            stagingDirectory: stagingDir
+            stagingDirectory: stagingDir,
+            executableURL: executableURL
         )
 
         let fileManager = FileManager.default
-        let downloadedFile = result.downloadedFileURL
-
         do {
-            if let expectedSize = model.expectedSizeBytes {
-                try ModelFileValidator.validateCompleteness(
-                    of: downloadedFile, declaredContentLength: expectedSize
-                )
-            }
-            try ModelFileValidator.validateSize(
-                of: downloadedFile, expectedBytes: model.expectedSizeBytes
+            try await Self.validateAndPromoteStagedFile(
+                downloadedFile,
+                to: destinationURL,
+                declaredContentLength: model.expectedSizeBytes,
+                expectedSize: model.expectedSizeBytes,
+                expectedSHA256: model.sha256
             )
-            try ModelFileValidator.validateSHA256(
-                of: downloadedFile, expectedSHA256: model.sha256
-            )
-            try Self.promoteStagedFile(at: downloadedFile, to: destinationURL, fileManager: fileManager)
             try? fileManager.removeItem(at: stagingDir)
         } catch {
             try? fileManager.removeItem(at: stagingDir)
@@ -457,23 +535,34 @@ final class ModelDownloadManager: ObservableObject {
     private func performURLSessionDownload(_ model: DownloadableRuntimeModel) async throws {
         try ensureRuntimeDirectoryExists()
         let destinationURL = modelFileURL(filename: model.filename)
-        let delegate = ModelDownloadSessionDelegate(
-            progressHandler: { [weak self] progress in
-                Task { @MainActor [weak self] in
-                    guard let self, self.downloadTasks[model.filename] != nil else { return }
-                    self.modelStates[model.filename] = .downloading(progress: progress)
-                }
-            },
-            resumeDataHandler: { [weak self] resumeData in
-                Task { @MainActor [weak self] in
-                    self?.urlSessionResumeDataByFilename[model.filename] = resumeData
-                }
+        let delegate = ModelDownloadSessionDelegate { [weak self] progress in
+            Task { @MainActor [weak self] in
+                guard let self, self.downloadTasks[model.filename] != nil else { return }
+                self.modelStates[model.filename] = .downloading(progress: progress)
             }
-        )
+        }
         activeSessionDelegates[model.filename] = delegate
 
         let resumeData = urlSessionResumeDataByFilename[model.filename]
-        let downloadResult = try await delegate.download(from: model.downloadURL, resumeData: resumeData)
+        let downloadResult: ModelDownloadSessionDelegate.DownloadResult
+        do {
+            downloadResult = try await delegate.download(
+                from: model.downloadURL,
+                resumeData: resumeData
+            )
+        } catch let interruption as URLSessionDownloadInterruption {
+            switch interruption {
+            case .paused(let newResumeData):
+                if let newResumeData {
+                    urlSessionResumeDataByFilename[model.filename] = newResumeData
+                }
+                throw Aria2DownloadError.paused
+            }
+        } catch {
+            // Invalid or stale resume data must not poison every subsequent Retry attempt.
+            urlSessionResumeDataByFilename.removeValue(forKey: model.filename)
+            throw error
+        }
         let fileManager = FileManager.default
         let temporaryURL = downloadResult.temporaryURL
 
@@ -498,19 +587,18 @@ final class ModelDownloadManager: ObservableObject {
             throw error
         }
 
+        let responseLength = downloadResult.response.expectedContentLength
+        let declaredContentLength = downloadResult.expectedFileSize > 0
+            ? downloadResult.expectedFileSize
+            : responseLength
         do {
-            if let expectedSize = model.expectedSizeBytes {
-                try ModelFileValidator.validateCompleteness(
-                    of: stagingURL, declaredContentLength: expectedSize
-                )
-            }
-            try ModelFileValidator.validateSize(
-                of: stagingURL, expectedBytes: model.expectedSizeBytes
+            try await Self.validateAndPromoteStagedFile(
+                stagingURL,
+                to: destinationURL,
+                declaredContentLength: declaredContentLength,
+                expectedSize: model.expectedSizeBytes,
+                expectedSHA256: model.sha256
             )
-            try ModelFileValidator.validateSHA256(
-                of: stagingURL, expectedSHA256: model.sha256
-            )
-            try Self.promoteStagedFile(at: stagingURL, to: destinationURL, fileManager: fileManager)
         } catch {
             try? fileManager.removeItem(at: stagingURL)
             throw error
@@ -521,7 +609,33 @@ final class ModelDownloadManager: ObservableObject {
     /// an atomic replace is used so a crash or error mid-promotion can never destroy the existing good
     /// model before the replacement is committed (the old delete-then-move could leave nothing
     /// installed). `replaceItemAt` removes the staged file as part of the swap.
-    private static func promoteStagedFile(
+    private nonisolated static func validateAndPromoteStagedFile(
+        _ stagingURL: URL,
+        to destinationURL: URL,
+        declaredContentLength: Int64?,
+        expectedSize: Int64?,
+        expectedSHA256: String?
+    ) async throws {
+        let validationTask = Task.detached(priority: .utility) {
+            if let declaredContentLength {
+                try ModelFileValidator.validateCompleteness(
+                    of: stagingURL,
+                    declaredContentLength: declaredContentLength
+                )
+            }
+            try ModelFileValidator.validateSize(of: stagingURL, expectedBytes: expectedSize)
+            try ModelFileValidator.validateSHA256(of: stagingURL, expectedSHA256: expectedSHA256)
+            try Self.promoteStagedFile(at: stagingURL, to: destinationURL)
+        }
+
+        try await withTaskCancellationHandler {
+            try await validationTask.value
+        } onCancel: {
+            validationTask.cancel()
+        }
+    }
+
+    private nonisolated static func promoteStagedFile(
         at stagingURL: URL,
         to destinationURL: URL,
         fileManager: FileManager = .default
@@ -558,31 +672,29 @@ final class ModelDownloadManager: ObservableObject {
 
     /// Resolves an isolated, URL-unique staging directory for a model download to prevent cross-repo collisions.
     private func aria2StagingDirectoryURL(for model: DownloadableRuntimeModel) -> URL {
-        aria2StagingDirectoryURL(downloadURL: model.downloadURL, filename: model.filename)
+        Aria2StagingDirectoryResolver.directory(
+            in: runtimeDirectoryURL,
+            downloadURL: model.downloadURL,
+            filename: model.filename
+        )
     }
 
-    private func aria2StagingDirectoryURL(downloadURL: URL, filename: String) -> URL {
-        let hash = SHA256.hash(data: Data(downloadURL.absoluteString.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
-            .prefix(12)
-        return runtimeDirectoryURL.appendingPathComponent(".aria2-staging-\(hash)-\(filename)", isDirectory: true)
+    /// Older builds used a filename-only directory. It is safe to remove that one exact path,
+    /// but never enumerate suffix matches because other repositories may use the same filename.
+    private func legacyAria2StagingDirectoryURL(filename: String) -> URL {
+        Aria2StagingDirectoryResolver.legacyDirectory(
+            in: runtimeDirectoryURL,
+            filename: filename
+        )
     }
 
-    /// Removes all staging folders corresponding to `filename`.
-    private func cleanupAllAria2StagingDirectories(for filename: String) {
-        guard let enumerator = FileManager.default.enumerator(
-            at: runtimeDirectoryURL,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsSubdirectoryDescendants]
-        ) else { return }
-
-        for case let folderURL as URL in enumerator {
-            let folderName = folderURL.lastPathComponent
-            if folderName.hasPrefix(".aria2-staging-") && folderName.hasSuffix("-\(filename)") {
-                try? FileManager.default.removeItem(at: folderURL)
-            }
-        }
+    /// Removes only the active source's resume state after its backend has stopped.
+    private func removeResumeArtifacts(for model: DownloadableRuntimeModel) {
+        urlSessionResumeDataByFilename.removeValue(forKey: model.filename)
+        try? FileManager.default.removeItem(at: aria2StagingDirectoryURL(for: model))
+        try? FileManager.default.removeItem(
+            at: legacyAria2StagingDirectoryURL(filename: model.filename)
+        )
     }
 
     private func isInstalled(model: DownloadableRuntimeModel) -> Bool {
@@ -602,181 +714,5 @@ final class ModelDownloadManager: ObservableObject {
             }
         }
         installedModelFilenames = filenames
-    }
-}
-
-/// Bridges `URLSessionDownloadDelegate` callbacks into one async result plus incremental progress updates.
-private final class ModelDownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    struct DownloadResult {
-        let temporaryURL: URL
-        let response: URLResponse
-    }
-
-    private let progressHandler: @Sendable (Double?) -> Void
-    private let resumeDataHandler: (@Sendable (Data) -> Void)?
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<DownloadResult, Error>?
-    private var downloadedFileURL: URL?
-    private var response: URLResponse?
-    private var hasCompleted = false
-    private var activeDownloadTask: URLSessionDownloadTask?
-    private var finishError: Error?
-    private var isUserPaused = false
-    private var isUserCancelled = false
-
-    init(
-        progressHandler: @escaping @Sendable (Double?) -> Void,
-        resumeDataHandler: (@Sendable (Data) -> Void)? = nil
-    ) {
-        self.progressHandler = progressHandler
-        self.resumeDataHandler = resumeDataHandler
-    }
-
-    func download(from url: URL, resumeData: Data? = nil) async throws -> DownloadResult {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
-
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                self.lock.lock()
-                if self.isUserCancelled {
-                    self.lock.unlock()
-                    continuation.resume(throwing: CancellationError())
-                    return
-                }
-                if self.isUserPaused {
-                    self.lock.unlock()
-                    continuation.resume(throwing: Aria2DownloadError.paused)
-                    return
-                }
-
-                self.continuation = continuation
-                let task: URLSessionDownloadTask
-                if let resumeData {
-                    task = session.downloadTask(withResumeData: resumeData)
-                } else {
-                    task = session.downloadTask(with: url)
-                }
-                self.activeDownloadTask = task
-                self.lock.unlock()
-                task.resume()
-            }
-        } onCancel: { [weak self] in
-            self?.cancel()
-        }
-    }
-
-    func pause() {
-        lock.lock()
-        isUserPaused = true
-        let task = activeDownloadTask
-        lock.unlock()
-
-        task?.cancel(byProducingResumeData: { [weak self] resumeData in
-            guard let resumeData else { return }
-            self?.resumeDataHandler?(resumeData)
-        })
-    }
-
-    func cancel() {
-        lock.lock()
-        isUserPaused = false
-        isUserCancelled = true
-        let task = activeDownloadTask
-        lock.unlock()
-
-        task?.cancel()
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        downloadTask: URLSessionDownloadTask,
-        didWriteData bytesWritten: Int64,
-        totalBytesWritten: Int64,
-        totalBytesExpectedToWrite: Int64
-    ) {
-        let progress: Double?
-        if totalBytesExpectedToWrite > 0 {
-            progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
-        } else {
-            progress = nil
-        }
-
-        progressHandler(progress)
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        downloadTask: URLSessionDownloadTask,
-        didFinishDownloadingTo location: URL
-    ) {
-        do {
-            let rescued = try DownloadFileRescuer.rescue(temporaryFileAt: location)
-            lock.lock()
-            downloadedFileURL = rescued
-            lock.unlock()
-        } catch {
-            lock.lock()
-            finishError = error
-            lock.unlock()
-        }
-        lock.lock()
-        response = downloadTask.response
-        lock.unlock()
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        lock.lock()
-        guard !hasCompleted else {
-            lock.unlock()
-            return
-        }
-        hasCompleted = true
-        let cont = continuation
-        continuation = nil
-        let paused = isUserPaused
-        let cancelled = isUserCancelled
-        let fileURL = downloadedFileURL
-        let resp = response
-        let failure = error ?? finishError
-        lock.unlock()
-
-        defer {
-            session.finishTasksAndInvalidate()
-        }
-
-        if let resumeData = (error as? NSError)?.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
-            resumeDataHandler?(resumeData)
-        }
-
-        if paused {
-            cont?.resume(throwing: Aria2DownloadError.paused)
-            return
-        }
-
-        if cancelled || (error as? URLError)?.code == .cancelled {
-            if let fileURL {
-                DownloadFileRescuer.cleanup(holdingFileAt: fileURL)
-            }
-            cont?.resume(throwing: CancellationError())
-            return
-        }
-
-        if let failure {
-            if let fileURL {
-                DownloadFileRescuer.cleanup(holdingFileAt: fileURL)
-            }
-            cont?.resume(throwing: failure)
-            return
-        }
-
-        guard let fileURL, let resp else {
-            cont?.resume(throwing: URLError(.badServerResponse))
-            return
-        }
-
-        cont?.resume(
-            returning: DownloadResult(temporaryURL: fileURL, response: resp))
     }
 }

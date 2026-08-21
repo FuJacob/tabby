@@ -124,61 +124,16 @@ private struct UnsupportedAvailabilityProvider: FoundationModelAvailabilityProvi
 }
 
 extension FoundationModelAvailabilityService {
-    struct DetectionInfo: Equatable, Sendable {
-        let macosVersion: String
-        let isEligibleOS: Bool
-        let hasFramework: Bool
-        let availabilityState: FoundationModelAvailabilityState
-
-        var summary: String {
-            if !isEligibleOS {
-                return "macOS \(macosVersion) is not eligible (requires macOS 26 or later)."
-            }
-            if !hasFramework {
-                return "macOS \(macosVersion) detected, but FoundationModels framework is unavailable in this build."
-            }
-            return availabilityState.summary
-        }
-    }
-
-    var detectionInfo: DetectionInfo {
-        let version = ProcessInfo.processInfo.operatingSystemVersion
-        let verStr = version.patchVersion == 0 ? "\(version.majorVersion).\(version.minorVersion)" : "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
-        let eligible = version.majorVersion >= 26
-        var frameworkAvailable = false
-        #if canImport(FoundationModels)
-        if #available(macOS 26.0, *) {
-            frameworkAvailable = true
-        }
-        #endif
-
-        return DetectionInfo(
-            macosVersion: verStr,
-            isEligibleOS: eligible,
-            hasFramework: frameworkAvailable,
-            availabilityState: state
-        )
-    }
-
     private static func makeDefaultProvider() -> any FoundationModelAvailabilityProviding {
-        let version = ProcessInfo.processInfo.operatingSystemVersion
-        let isEligibleOS = version.majorVersion >= 26
-
         #if canImport(FoundationModels)
         if #available(macOS 26.0, *) {
             return SystemAvailabilityProvider()
         }
         #endif
 
-        if isEligibleOS {
-            return UnsupportedAvailabilityProvider(
-                reason: "Apple Foundation Models framework is unavailable in this build on macOS \(version.majorVersion).\(version.minorVersion). Use Open Source on this Mac."
-            )
-        } else {
-            return UnsupportedAvailabilityProvider(
-                reason: "Apple Intelligence requires macOS 26 or later (this Mac is running macOS \(version.majorVersion).\(version.minorVersion)). Use Open Source on this Mac."
-            )
-        }
+        return UnsupportedAvailabilityProvider(
+            reason: "Apple Intelligence requires macOS 26 or later. Use Open Source on this Mac."
+        )
     }
 }
 
