@@ -110,6 +110,35 @@ final class ShortcutConflictTests: XCTestCase {
         XCTAssertEqual(conflict, "Accept Entire Suggestion")
     }
 
+    /// An absent same-app full-accept override still resolves to the global full-accept key. The
+    /// recorder must compare against that effective fallback, not just explicitly stored fields.
+    func test_perAppConflict_flagsGlobalFullAcceptFallbackCollision() {
+        let model = makeModel()
+
+        let conflict = model.conflictingPerAppShortcutName(
+            forBundleIdentifier: "com.apple.notes",
+            keyCode: model.fullAcceptanceKeyCode,
+            modifiers: model.fullAcceptanceKeyModifiers,
+            excluding: .acceptWord
+        )
+
+        XCTAssertEqual(conflict, "Accept Entire Suggestion")
+    }
+
+    /// The inverse fallback is equally important when recording a per-app full-accept binding.
+    func test_perAppConflict_flagsGlobalAcceptFallbackCollision() {
+        let model = makeModel()
+
+        let conflict = model.conflictingPerAppShortcutName(
+            forBundleIdentifier: "com.apple.notes",
+            keyCode: model.acceptanceKeyCode,
+            modifiers: model.acceptanceKeyModifiers,
+            excluding: .acceptEntireSuggestion
+        )
+
+        XCTAssertEqual(conflict, "Accept Word")
+    }
+
     /// The global toggle is app-spanning, so a per-app accept that collides with it would still
     /// be eaten by the toggle tap. Refuse the combo up front.
     func test_perAppConflict_flagsGlobalToggleCollision() {

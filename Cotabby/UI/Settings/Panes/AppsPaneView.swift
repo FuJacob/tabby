@@ -22,8 +22,8 @@ struct AppsPaneView: View {
     var body: some View {
         SettingsPaneScaffold {
             Section("Per-App Shortcuts") {
-                Text("Give a specific app its own accept key. Apps without an override use the "
-                    + "global shortcut from the Shortcuts pane.")
+                Text("Give a specific app its own accept key, disable an accept action there, or "
+                    + "keep inheriting the global shortcut from the Shortcuts pane.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -198,7 +198,6 @@ struct AppsPaneView: View {
         let recordingBinding = recordingBinding(forBundleIdentifier: override.bundleIdentifier, action: action)
         let label = perAppBindingLabel(override: override, action: action)
         let keyCode = perAppBindingKeyCode(override: override, action: action)
-        let modifiers = perAppBindingModifiers(override: override, action: action)
 
         HStack(alignment: .center, spacing: 12) {
             Text(title)
@@ -236,16 +235,16 @@ struct AppsPaneView: View {
                             action: action
                         )
                     }
+
+                    Button("Disable") {
+                        disablePerAppBinding(override: override, action: action)
+                    }
+                    .help("No key will perform \(title.lowercased()) in \(override.displayName).")
                 }
             } else {
                 KeybindRow(
                     label: label,
                     keyCode: keyCode,
-                    modifiers: modifiers,
-                    // No factory default for per-app rows — "Reset to global" is the meaningful
-                    // gesture and is wired through `onClear` below. Passing the disabled sentinel
-                    // here ensures the recorder's built-in Reset button never appears.
-                    defaultKeyCode: SuggestionSettingsModel.disabledKeyCode,
                     isRecording: recordingBinding,
                     onRecord: { keyCode, modifiers, recordedLabel in
                         applyPerAppBinding(
@@ -256,10 +255,12 @@ struct AppsPaneView: View {
                             label: recordedLabel
                         )
                     },
-                    onReset: nil,
-                    onClear: { clearPerAppBinding(override: override, action: action) },
-                    clearHelp: "Reset to global — \(override.displayName) will use the global "
-                        + "shortcut again.",
+                    onReset: { clearPerAppBinding(override: override, action: action) },
+                    resetLabel: "Use Global",
+                    shouldShowReset: true,
+                    onClear: { disablePerAppBinding(override: override, action: action) },
+                    clearLabel: "Disable",
+                    clearHelp: "No key will perform \(title.lowercased()) in \(override.displayName).",
                     conflictChecker: perAppConflictChecker(
                         bundleIdentifier: override.bundleIdentifier,
                         action: action
@@ -306,20 +307,6 @@ struct AppsPaneView: View {
         }
     }
 
-    private func perAppBindingModifiers(
-        override: PerAppShortcutOverride,
-        action: ShortcutAction
-    ) -> ShortcutModifierMask {
-        switch action {
-        case .acceptWord:
-            return override.acceptKeyModifiers ?? suggestionSettings.acceptanceKeyModifiers
-        case .acceptEntireSuggestion:
-            return override.fullAcceptKeyModifiers ?? suggestionSettings.fullAcceptanceKeyModifiers
-        case .toggleTabby:
-            return suggestionSettings.globalToggleKeyModifiers
-        }
-    }
-
     private func applyPerAppBinding(
         override: PerAppShortcutOverride,
         action: ShortcutAction,
@@ -362,6 +349,16 @@ struct AppsPaneView: View {
         }
     }
 
+    private func disablePerAppBinding(override: PerAppShortcutOverride, action: ShortcutAction) {
+        applyPerAppBinding(
+            override: override,
+            action: action,
+            keyCode: SuggestionSettingsModel.disabledKeyCode,
+            modifiers: [],
+            label: SuggestionSettingsModel.disabledKeyLabel
+        )
+    }
+
     private func perAppConflictChecker(
         bundleIdentifier: String,
         action: ShortcutAction
@@ -390,16 +387,11 @@ struct AppsPaneView: View {
 
         for url in panel.urls {
             guard let metadata = ApplicationBundleMetadata(appURL: url) else { continue }
-            // Seed with the current global accept key so the row shows up immediately as an
-            // explicit override; the user can then re-bind it. Without this, an "Add App" with
-            // no further action would produce an empty row that the sanitizer removes on next
-            // launch — the user would think the add failed.
-            suggestionSettings.setPerAppAcceptKey(
+            // Adding an app is not itself a shortcut choice. Keep both actions inherited until the
+            // user records or disables one, so later global changes continue to flow through.
+            suggestionSettings.addPerAppShortcutApp(
                 bundleIdentifier: metadata.bundleIdentifier,
-                displayName: metadata.displayName,
-                keyCode: suggestionSettings.acceptanceKeyCode,
-                modifiers: suggestionSettings.acceptanceKeyModifiers,
-                label: suggestionSettings.acceptanceKeyLabel
+                displayName: metadata.displayName
             )
         }
     }

@@ -118,11 +118,9 @@ final class OverlayController: SuggestionOverlayControlling {
             reduceMotionEnabled: reduceMotionEnabled
         )
 
-        // Per-app render-mode overrides are not wired yet, so the policy always resolves without a
-        // host bundle identifier; thread the focused app's id here when per-app overrides ship.
         let mode = currentRenderModePolicy.mode(
             for: geometry,
-            bundleIdentifier: nil
+            bundleIdentifier: geometry.bundleIdentifier
         )
 
         // Start fully transparent so the panel's first composited frame is invisible. Setting alpha
@@ -208,7 +206,9 @@ final class OverlayController: SuggestionOverlayControlling {
         let renderFont = referenceFieldFont.flatMap { NSFont(name: $0.fontName, size: fontSize) }
         // `nil` when the user disabled the hint or no accept key is bound — in that case the layout
         // drops the keycap and its reserved width so ghost text can use the full line.
-        let acceptanceHintLabel = suggestionSettings.acceptanceHintLabel
+        let acceptanceHintLabel = suggestionSettings.acceptanceHintLabel(
+            forBundleIdentifier: geometry.bundleIdentifier
+        )
         let layout = precomputedLayout ?? GhostSuggestionLayout.make(
             text: text,
             geometry: geometry,
@@ -323,7 +323,9 @@ final class OverlayController: SuggestionOverlayControlling {
         // The exact-width slide is only valid while both the old and new tails fit on one line.
         // Multi-line layout anchors at the field edge, not the caret, so a fresh re-anchor is needed
         // (e.g. the shrinking first-line budget makes the tail start wrapping).
-        let showsHint = suggestionSettings.acceptanceHintLabel != nil
+        let showsHint = suggestionSettings.acceptanceHintLabel(
+            forBundleIdentifier: geometry.bundleIdentifier
+        ) != nil
         let beforeLayout = GhostSuggestionLayout.make(
             text: beforeText,
             geometry: geometry,
@@ -363,7 +365,9 @@ final class OverlayController: SuggestionOverlayControlling {
         geometry: SuggestionOverlayGeometry,
         reason: CompletionRenderMode.MirrorReason
     ) {
-        let acceptanceHintLabel = suggestionSettings.acceptanceHintLabel
+        let acceptanceHintLabel = suggestionSettings.acceptanceHintLabel(
+            forBundleIdentifier: geometry.bundleIdentifier
+        )
         let visibleFrame = targetScreenVisibleFrame(for: geometry.caretRect)
         let layout = MirrorOverlayLayout.make(
             suggestion: text,

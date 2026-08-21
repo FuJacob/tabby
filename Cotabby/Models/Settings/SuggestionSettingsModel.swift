@@ -1052,28 +1052,41 @@ final class SuggestionSettingsModel: ObservableObject {
         store.saveShowAcceptanceHint(show)
     }
 
-    /// The label the ghost-text keycap should display, or `nil` when no hint should be drawn —
-    /// either the user turned it off or no key is currently bound to accept a suggestion. Prefers
-    /// the word-accept key (the historical "tab" pill) and falls back to the full-accept key so the
-    /// hint still teaches a working gesture after the word-accept key has been cleared.
-    var acceptanceHintLabel: String? {
+    /// The label the ghost-text keycap should display for the focused app, or `nil` when no hint
+    /// should be drawn. Resolution uses the same per-app-to-global precedence as `InputMonitor`, so
+    /// the UI never advertises a key that the current app will ignore. Word accept remains preferred;
+    /// a disabled word binding falls back to the effective full-accept binding.
+    func acceptanceHintLabel(forBundleIdentifier bundleIdentifier: String?) -> String? {
         guard showAcceptanceHint else {
             return nil
         }
 
-        if acceptanceKeyCode != Self.disabledKeyCode {
-            return acceptanceKeyLabel
+        let accept = resolvedAcceptBinding(forBundleIdentifier: bundleIdentifier)
+        if accept.keyCode != Self.disabledKeyCode {
+            return accept.label
         }
-        if fullAcceptanceKeyCode != Self.disabledKeyCode {
-            return fullAcceptanceKeyLabel
+        let fullAccept = resolvedFullAcceptBinding(forBundleIdentifier: bundleIdentifier)
+        if fullAccept.keyCode != Self.disabledKeyCode {
+            return fullAccept.label
         }
         return nil
     }
 
+    /// Global-only compatibility surface for settings tests and callers without a focused app.
+    var acceptanceHintLabel: String? {
+        acceptanceHintLabel(forBundleIdentifier: nil)
+    }
+
     /// The emoji picker commits with the word-accept shortcut specifically. This is separate from
     /// `acceptanceHintLabel` because hiding ghost-text hints should not hide the picker instruction.
+    func emojiPickerAcceptKeyLabel(forBundleIdentifier bundleIdentifier: String?) -> String? {
+        let accept = resolvedAcceptBinding(forBundleIdentifier: bundleIdentifier)
+        return accept.keyCode == Self.disabledKeyCode ? nil : accept.label
+    }
+
+    /// Global-only compatibility surface for contexts that have no focused application identity.
     var emojiPickerAcceptKeyLabel: String? {
-        acceptanceKeyCode == Self.disabledKeyCode ? nil : acceptanceKeyLabel
+        emojiPickerAcceptKeyLabel(forBundleIdentifier: nil)
     }
 
     func setCustomSuggestionTextColorHex(_ hex: String?) {
@@ -1268,6 +1281,23 @@ final class SuggestionSettingsModel: ObservableObject {
         return perAppShortcutOverrides.first { $0.bundleIdentifier == normalized }
     }
 
+    /// Adds an app to the settings list while leaving both actions inherited. App selection and
+    /// shortcut customization are separate user choices: persisting this empty binding row avoids
+    /// silently pinning today's global key merely because the user opened the app picker.
+    func addPerAppShortcutApp(bundleIdentifier: String, displayName: String) {
+        guard let normalizedBundleIdentifier = SuggestionSettingsStore.normalizedBundleIdentifier(bundleIdentifier) else {
+            return
+        }
+        let normalizedDisplayName = SuggestionSettingsStore.normalizedDisplayName(
+            displayName,
+            fallbackBundleIdentifier: normalizedBundleIdentifier
+        )
+        var override = existingPerAppOverride(bundleIdentifier: normalizedBundleIdentifier)
+            ?? PerAppShortcutOverride(bundleIdentifier: normalizedBundleIdentifier, displayName: normalizedDisplayName)
+        override.displayName = normalizedDisplayName
+        upsertPerAppOverride(override)
+    }
+
     /// Replaces (or inserts) the accept-word binding for one app. Pass the disabled sentinel
     /// `(SuggestionSettingsModel.disabledKeyCode, [], "None")` to bind "no key accepts in this app";
     /// pass anything else for a real combo. To restore the global fallback, call
@@ -1298,8 +1328,8 @@ final class SuggestionSettingsModel: ObservableObject {
         upsertPerAppOverride(override)
     }
 
-    /// Clears just the accept-word override for one app. If the row also has no full-accept
-    /// override left, the row itself is removed so the resolver re-inherits the global pair.
+    /// Clears just the accept-word override for one app, restoring the global fallback while
+    /// keeping the app in the user's configured list.
     func clearPerAppAcceptKey(bundleIdentifier: String) {
         guard let normalizedBundleIdentifier = SuggestionSettingsStore.normalizedBundleIdentifier(bundleIdentifier),
               var override = existingPerAppOverride(bundleIdentifier: normalizedBundleIdentifier) else {
@@ -1348,8 +1378,8 @@ final class SuggestionSettingsModel: ObservableObject {
         upsertPerAppOverride(override)
     }
 
-    /// Drops the row for `bundleIdentifier` entirely — both accept fields revert to the global
-    /// binding. UI exposes this as "Reset to global" so the fallback path is a first-class action.
+    /// Drops the row for `bundleIdentifier` entirely. Both actions would resolve globally afterward,
+    /// and the app disappears from the per-app settings list.
     func removePerAppOverride(bundleIdentifier: String) {
         guard let normalizedBundleIdentifier = SuggestionSettingsStore.normalizedBundleIdentifier(bundleIdentifier) else {
             return
@@ -1364,20 +1394,38 @@ final class SuggestionSettingsModel: ObservableObject {
         perAppShortcutOverrides.first { $0.bundleIdentifier == bundleIdentifier }
     }
 
-    /// Upserts `override` into the sorted, deduped list. An override that has nilled out both
-    /// accept fields is removed from the store so the resolver naturally falls back to global —
-    /// the array never holds rows that decode to a no-op.
+    /// Upserts `override` into the sorted, deduped list. A row with two inherited actions remains
+    /// intentional state: it records that the user added this app and lets future global changes
+    /// flow through until an action is customized. Only `removePerAppOverride` removes that choice.
     private func upsertPerAppOverride(_ override: PerAppShortcutOverride) {
         var byBundle = Dictionary(uniqueKeysWithValues: perAppShortcutOverrides.map { ($0.bundleIdentifier, $0) })
-        if override.isEmpty {
-            byBundle.removeValue(forKey: override.bundleIdentifier)
-        } else {
-            byBundle[override.bundleIdentifier] = override
-        }
+        byBundle[override.bundleIdentifier] = override
         let updated = SuggestionSettingsStore.sortedPerAppShortcutOverrides(Array(byBundle.values))
         guard perAppShortcutOverrides != updated else { return }
         perAppShortcutOverrides = updated
         store.savePerAppShortcutOverrides(updated)
+    }
+
+    private func resolvedAcceptBinding(forBundleIdentifier bundleIdentifier: String?) -> ShortcutResolver.ResolvedBinding {
+        ShortcutResolver.acceptBinding(
+            frontmostBundleIdentifier: bundleIdentifier,
+            overrides: perAppShortcutOverrides,
+            globalKeyCode: acceptanceKeyCode,
+            globalModifiers: acceptanceKeyModifiers,
+            globalLabel: acceptanceKeyLabel
+        )
+    }
+
+    private func resolvedFullAcceptBinding(
+        forBundleIdentifier bundleIdentifier: String?
+    ) -> ShortcutResolver.ResolvedBinding {
+        ShortcutResolver.fullAcceptBinding(
+            frontmostBundleIdentifier: bundleIdentifier,
+            overrides: perAppShortcutOverrides,
+            globalKeyCode: fullAcceptanceKeyCode,
+            globalModifiers: fullAcceptanceKeyModifiers,
+            globalLabel: fullAcceptanceKeyLabel
+        )
     }
 
     // All stored state is thread-safe to release (Combine subjects, the value-typed store). The
@@ -1436,22 +1484,18 @@ final class SuggestionSettingsModel: ObservableObject {
     ) -> String? {
         guard keyCode != Self.disabledKeyCode else { return nil }
 
-        // Same-app check: only consult the other accept binding on the same row. The full set of
-        // ShortcutAction cases includes the global toggle, which intentionally falls through to
-        // the global-only check below.
-        if let override = perAppShortcutOverride(forBundleIdentifier: bundleIdentifier) {
-            if action != .acceptWord,
-               let overrideKey = override.acceptKeyCode,
-               let overrideModifiers = override.acceptKeyModifiers,
-               overrideKey == keyCode,
-               overrideModifiers == modifiers {
+        // Compare against the other action's *effective* same-app binding. An absent per-app field
+        // inherits its global counterpart, so inspecting only explicitly stored override fields
+        // would let an override collide silently with the other action's global fallback.
+        if action != .acceptWord {
+            let accept = resolvedAcceptBinding(forBundleIdentifier: bundleIdentifier)
+            if accept.keyCode == keyCode, accept.modifiers == modifiers {
                 return ShortcutAction.acceptWord.displayName
             }
-            if action != .acceptEntireSuggestion,
-               let overrideKey = override.fullAcceptKeyCode,
-               let overrideModifiers = override.fullAcceptKeyModifiers,
-               overrideKey == keyCode,
-               overrideModifiers == modifiers {
+        }
+        if action != .acceptEntireSuggestion {
+            let fullAccept = resolvedFullAcceptBinding(forBundleIdentifier: bundleIdentifier)
+            if fullAccept.keyCode == keyCode, fullAccept.modifiers == modifiers {
                 return ShortcutAction.acceptEntireSuggestion.displayName
             }
         }

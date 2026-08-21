@@ -310,7 +310,11 @@ final class CotabbyAppEnvironment {
             focusModel: focusModel,
             inserter: suggestionInserter,
             isEnabled: { suggestionSettings.isMacroExpansionEnabled },
-            acceptKeyLabel: { suggestionSettings.emojiPickerAcceptKeyLabel },
+            acceptKeyLabel: {
+                suggestionSettings.emojiPickerAcceptKeyLabel(
+                    forBundleIdentifier: focusModel.snapshot.bundleIdentifier
+                )
+            },
             isWordAcceptKey: { inputMonitor.isWordAcceptKey($0) }
         )
         // One coordinator fans every keystroke out to both inline-command controllers and owns the

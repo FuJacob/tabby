@@ -28,17 +28,11 @@ struct PerAppShortcutOverride: Codable, Equatable, Identifiable, Sendable {
 
     var id: String { bundleIdentifier }
 
-    /// True when there is no override left to persist — the row should be removed from the
-    /// settings store instead of sitting around as a no-op alongside the global bindings.
-    var isEmpty: Bool {
-        acceptKeyCode == nil && fullAcceptKeyCode == nil
-    }
-
     /// A copy with any *partially*-specified binding collapsed back to "inherit global". Each binding
     /// is a unit of (keyCode, modifiers, label) and `ShortcutResolver` only fires when all three are
-    /// present, so a row persisted with — say — a key code but no label would otherwise survive
-    /// `isEmpty`, appear in Settings, yet never fire at event time (a phantom override). Normalizing
-    /// on load keeps the stored shape matching exactly what the resolver honors.
+    /// present, so a row persisted with — say — a key code but no label would otherwise appear in
+    /// Settings yet never fire at event time. Normalizing on load keeps the stored shape matching
+    /// exactly what the resolver honors while preserving intentionally inherited rows.
     var bindingsNormalized: PerAppShortcutOverride {
         var normalized = self
         if acceptKeyCode == nil || acceptKeyModifiers == nil || acceptKeyLabel == nil {

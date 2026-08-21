@@ -16,6 +16,21 @@ final class PerAppShortcutOverrideStoreTests: XCTestCase {
         XCTAssertTrue(model.perAppShortcutOverrides.isEmpty)
     }
 
+    func test_addPerAppShortcutApp_persistsInheritedBindings() {
+        let suiteName = makeSuiteName()
+        let firstModel = makeModel(suiteName: suiteName)
+        firstModel.addPerAppShortcutApp(
+            bundleIdentifier: "com.apple.notes",
+            displayName: "Notes"
+        )
+
+        let secondModel = makeModel(suiteName: suiteName)
+        let restored = try? XCTUnwrap(secondModel.perAppShortcutOverrides.first)
+        XCTAssertEqual(restored?.bundleIdentifier, "com.apple.notes")
+        XCTAssertNil(restored?.acceptKeyCode)
+        XCTAssertNil(restored?.fullAcceptKeyCode)
+    }
+
     func test_setPerAppAcceptKey_persistsAndRoundTrips() {
         let suiteName = makeSuiteName()
         let firstModel = makeModel(suiteName: suiteName)
@@ -41,10 +56,9 @@ final class PerAppShortcutOverrideStoreTests: XCTestCase {
         XCTAssertNil(restored?.fullAcceptKeyLabel)
     }
 
-    /// Clearing both halves of an override must drop the row entirely so the resolver re-inherits
-    /// the global on this app. Leaving an empty row would publish a no-op that survives across
-    /// launches and burns lookup time forever.
-    func test_clearingBothActions_removesRowEntirely() {
+    /// Clearing both actions restores inheritance without losing the app the user deliberately
+    /// added to the settings list.
+    func test_clearingBothActions_keepsTrackedAppWithInheritedBindings() {
         let model = makeModel()
         model.setPerAppAcceptKey(
             bundleIdentifier: "com.apple.notes", displayName: "Notes",
@@ -60,10 +74,9 @@ final class PerAppShortcutOverrideStoreTests: XCTestCase {
         XCTAssertEqual(model.perAppShortcutOverrides.count, 1, "Row still has full-accept.")
 
         model.clearPerAppFullAcceptKey(bundleIdentifier: "com.apple.notes")
-        XCTAssertTrue(
-            model.perAppShortcutOverrides.isEmpty,
-            "Both actions cleared → row is gone and resolver inherits the global."
-        )
+        let restored = try? XCTUnwrap(model.perAppShortcutOverrides.first)
+        XCTAssertNil(restored?.acceptKeyCode)
+        XCTAssertNil(restored?.fullAcceptKeyCode)
     }
 
     /// `removePerAppOverride` is the user's "Reset to global" affordance: it drops the row no
@@ -119,9 +132,9 @@ final class PerAppShortcutOverrideStoreTests: XCTestCase {
         XCTAssertEqual(model.perAppShortcutOverrides.first?.acceptKeyCode, 36)
     }
 
-    /// A previously-persisted empty row (e.g. a corrupted/hand-edited UserDefault) is dropped on
-    /// read so the live store never carries a no-op forward.
-    func test_sanitize_dropsEmptyRowsOnLoad() throws {
+    /// An all-inherited row records an app the user added without choosing a binding yet, so load
+    /// preserves it rather than silently converting app selection into an explicit shortcut.
+    func test_sanitize_preservesAllInheritedRowsOnLoad() throws {
         let suiteName = makeSuiteName()
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -137,10 +150,10 @@ final class PerAppShortcutOverrideStoreTests: XCTestCase {
         defaults.set(data, forKey: "cotabbyPerAppShortcutOverrides")
 
         let model = SuggestionSettingsModel(configuration: .standard, userDefaults: defaults)
-        XCTAssertTrue(
-            model.perAppShortcutOverrides.isEmpty,
-            "Empty row must be sanitized away so it doesn't waste resolver lookups."
-        )
+        let restored = try XCTUnwrap(model.perAppShortcutOverrides.first)
+        XCTAssertEqual(restored.bundleIdentifier, "com.apple.notes")
+        XCTAssertNil(restored.acceptKeyCode)
+        XCTAssertNil(restored.fullAcceptKeyCode)
     }
 
     /// A row persisted with a *partial* binding — a key code but no modifiers/label, which

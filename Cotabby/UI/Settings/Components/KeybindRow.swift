@@ -7,15 +7,16 @@ import SwiftUI
 struct KeybindRow: View {
     let label: String
     let keyCode: CGKeyCode
-    let modifiers: ShortcutModifierMask
-    let defaultKeyCode: CGKeyCode
     @Binding var isRecording: Bool
     let onRecord: (CGKeyCode, ShortcutModifierMask, String) -> Void
     /// `nil` hides the Reset button — used by bindings whose only sensible "reset" is unbind, which
     /// the Clear button already covers (e.g. the opt-in global-toggle hotkey, and per-app overrides
     /// where "reset to global" is a different gesture than the recorder's factory default).
     let onReset: (() -> Void)?
+    let resetLabel: String
+    let shouldShowReset: Bool
     let onClear: () -> Void
+    let clearLabel: String
     let clearHelp: String
     /// Names the action that already owns a proposed combo so the recorder can block duplicates.
     let conflictChecker: (CGKeyCode, ShortcutModifierMask) -> String?
@@ -41,15 +42,15 @@ struct KeybindRow: View {
                 }
             }
 
-            if let onReset, keyCode != defaultKeyCode || !modifiers.isEmpty {
-                Button("Reset") {
+            if let onReset, shouldShowReset {
+                Button(resetLabel) {
                     onReset()
                     isRecording = false
                 }
             }
 
             if keyCode != SuggestionSettingsModel.disabledKeyCode {
-                Button("Clear") {
+                Button(clearLabel) {
                     onClear()
                     isRecording = false
                 }

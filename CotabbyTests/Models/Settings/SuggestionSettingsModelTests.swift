@@ -424,6 +424,51 @@ final class SuggestionSettingsModelTests: XCTestCase {
         XCTAssertEqual(model.emojiPickerAcceptKeyLabel, model.acceptanceKeyLabel)
     }
 
+    func test_acceptanceLabels_resolvePerAppOverrides() {
+        let model = makeModel()
+        model.setPerAppAcceptKey(
+            bundleIdentifier: "com.apple.notes",
+            displayName: "Notes",
+            keyCode: 49,
+            modifiers: [.shift],
+            label: "⇧Space"
+        )
+
+        XCTAssertEqual(
+            model.acceptanceHintLabel(forBundleIdentifier: "com.apple.notes"),
+            "⇧Space"
+        )
+        XCTAssertEqual(
+            model.emojiPickerAcceptKeyLabel(forBundleIdentifier: "com.apple.notes"),
+            "⇧Space"
+        )
+        XCTAssertEqual(
+            model.acceptanceHintLabel(forBundleIdentifier: "com.apple.TextEdit"),
+            model.acceptanceKeyLabel
+        )
+    }
+
+    func test_acceptanceLabels_honorPerAppDisabledBinding() {
+        let model = makeModel()
+        model.setPerAppAcceptKey(
+            bundleIdentifier: "com.apple.notes",
+            displayName: "Notes",
+            keyCode: SuggestionSettingsModel.disabledKeyCode,
+            modifiers: [],
+            label: SuggestionSettingsModel.disabledKeyLabel
+        )
+
+        XCTAssertEqual(
+            model.acceptanceHintLabel(forBundleIdentifier: "com.apple.notes"),
+            model.fullAcceptanceKeyLabel,
+            "Ghost hints fall back to the still-working full-accept action."
+        )
+        XCTAssertNil(
+            model.emojiPickerAcceptKeyLabel(forBundleIdentifier: "com.apple.notes"),
+            "Inline commands commit with word accept specifically."
+        )
+    }
+
     // MARK: - Keybinding rules
 
     func test_setAcceptanceKey_stealingTheFullAcceptComboClearsFullAccept() {

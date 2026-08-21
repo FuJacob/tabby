@@ -22,8 +22,6 @@ struct ShortcutsPaneView: View {
                     KeybindRow(
                         label: suggestionSettings.acceptanceKeyLabel,
                         keyCode: suggestionSettings.acceptanceKeyCode,
-                        modifiers: suggestionSettings.acceptanceKeyModifiers,
-                        defaultKeyCode: SuggestionSettingsModel.defaultAcceptanceKeyCode,
                         isRecording: $isRecordingKeybind,
                         onRecord: { keyCode, modifiers, label in
                             suggestionSettings.setAcceptanceKey(
@@ -39,7 +37,12 @@ struct ShortcutsPaneView: View {
                                 label: SuggestionSettingsModel.defaultAcceptanceKeyLabel
                             )
                         },
+                        resetLabel: "Reset",
+                        shouldShowReset: suggestionSettings.acceptanceKeyCode
+                            != SuggestionSettingsModel.defaultAcceptanceKeyCode
+                            || !suggestionSettings.acceptanceKeyModifiers.isEmpty,
                         onClear: { suggestionSettings.clearAcceptanceKey() },
+                        clearLabel: "Clear",
                         clearHelp: "Unbind this shortcut. No key will accept word-by-word.",
                         conflictChecker: { keyCode, modifiers in
                             suggestionSettings.conflictingShortcutName(
@@ -62,8 +65,6 @@ struct ShortcutsPaneView: View {
                     KeybindRow(
                         label: suggestionSettings.fullAcceptanceKeyLabel,
                         keyCode: suggestionSettings.fullAcceptanceKeyCode,
-                        modifiers: suggestionSettings.fullAcceptanceKeyModifiers,
-                        defaultKeyCode: SuggestionSettingsModel.defaultFullAcceptanceKeyCode,
                         isRecording: $isRecordingFullAcceptKeybind,
                         onRecord: { keyCode, modifiers, label in
                             suggestionSettings.setFullAcceptanceKey(
@@ -79,7 +80,12 @@ struct ShortcutsPaneView: View {
                                 label: SuggestionSettingsModel.defaultFullAcceptanceKeyLabel
                             )
                         },
+                        resetLabel: "Reset",
+                        shouldShowReset: suggestionSettings.fullAcceptanceKeyCode
+                            != SuggestionSettingsModel.defaultFullAcceptanceKeyCode
+                            || !suggestionSettings.fullAcceptanceKeyModifiers.isEmpty,
                         onClear: { suggestionSettings.clearFullAcceptanceKey() },
+                        clearLabel: "Clear",
                         clearHelp: "Unbind this shortcut. No key will accept the whole suggestion at once.",
                         conflictChecker: { keyCode, modifiers in
                             suggestionSettings.conflictingShortcutName(
@@ -105,8 +111,6 @@ struct ShortcutsPaneView: View {
                     KeybindRow(
                         label: suggestionSettings.globalToggleKeyLabel,
                         keyCode: suggestionSettings.globalToggleKeyCode,
-                        modifiers: suggestionSettings.globalToggleKeyModifiers,
-                        defaultKeyCode: SuggestionSettingsModel.disabledKeyCode,
                         isRecording: $isRecordingGlobalToggleKeybind,
                         onRecord: { keyCode, modifiers, label in
                             suggestionSettings.setGlobalToggleKey(
@@ -116,7 +120,10 @@ struct ShortcutsPaneView: View {
                             )
                         },
                         onReset: nil,
+                        resetLabel: "Reset",
+                        shouldShowReset: false,
                         onClear: { suggestionSettings.clearGlobalToggleKey() },
+                        clearLabel: "Clear",
                         clearHelp: "Unbind this shortcut. No key will toggle Tabby on or off.",
                         conflictChecker: { keyCode, modifiers in
                             suggestionSettings.conflictingShortcutName(

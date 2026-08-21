@@ -1002,10 +1002,9 @@ struct SuggestionSettingsStore {
         return Self.sanitizedPerAppShortcutOverrides(decoded)
     }
 
-    /// Trim, dedupe by bundle id, collapse partial bindings to "inherit global", drop empty (no
-    /// accept and no full-accept) entries, and normalize each row's display name. Mirrors
-    /// `sanitizedDisabledAppRules` so both stores have the same "absent vs empty UserDefault"
-    /// discipline and one decode-time hardening pass.
+    /// Trim, dedupe by bundle id, collapse partial bindings to "inherit global", and normalize each
+    /// row's display name. Rows with both actions inherited remain valid because they represent an
+    /// app the user explicitly added without pinning it away from future global shortcut changes.
     private static func sanitizedPerAppShortcutOverrides(
         _ overrides: [PerAppShortcutOverride]
     ) -> [PerAppShortcutOverride] {
@@ -1015,11 +1014,9 @@ struct SuggestionSettingsStore {
             guard let normalizedBundleIdentifier = normalizedBundleIdentifier(override.bundleIdentifier) else {
                 continue
             }
-            // Collapse any partial binding (e.g. a key code with no label) to "inherit global" before
-            // the empty check, so a phantom row that survives load but never fires in `ShortcutResolver`
-            // can't linger in Settings.
+            // Collapse any partial binding (e.g. a key code with no label) to "inherit global" so a
+            // persisted row can never advertise a binding that `ShortcutResolver` will ignore.
             let normalized = override.bindingsNormalized
-            guard !normalized.isEmpty else { continue }
 
             byBundle[normalizedBundleIdentifier] = PerAppShortcutOverride(
                 bundleIdentifier: normalizedBundleIdentifier,
