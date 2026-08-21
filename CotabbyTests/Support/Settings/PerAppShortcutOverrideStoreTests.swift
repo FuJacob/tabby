@@ -58,7 +58,7 @@ final class PerAppShortcutOverrideStoreTests: XCTestCase {
 
     /// Clearing both actions restores inheritance without losing the app the user deliberately
     /// added to the settings list.
-    func test_clearingBothActions_keepsTrackedAppWithInheritedBindings() {
+    func test_clearingBothActions_keepsTrackedAppWithInheritedBindings() throws {
         let model = makeModel()
         model.setPerAppAcceptKey(
             bundleIdentifier: "com.apple.notes", displayName: "Notes",
@@ -74,9 +74,10 @@ final class PerAppShortcutOverrideStoreTests: XCTestCase {
         XCTAssertEqual(model.perAppShortcutOverrides.count, 1, "Row still has full-accept.")
 
         model.clearPerAppFullAcceptKey(bundleIdentifier: "com.apple.notes")
-        let restored = try? XCTUnwrap(model.perAppShortcutOverrides.first)
-        XCTAssertNil(restored?.acceptKeyCode)
-        XCTAssertNil(restored?.fullAcceptKeyCode)
+        XCTAssertEqual(model.perAppShortcutOverrides.count, 1, "Clearing both actions keeps the tracked app.")
+        let restored = try XCTUnwrap(model.perAppShortcutOverrides.first)
+        XCTAssertNil(restored.acceptKeyCode)
+        XCTAssertNil(restored.fullAcceptKeyCode)
     }
 
     /// `removePerAppOverride` is the user's "Reset to global" affordance: it drops the row no

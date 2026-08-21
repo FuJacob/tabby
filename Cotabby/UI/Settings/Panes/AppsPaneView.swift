@@ -162,6 +162,7 @@ struct AppsPaneView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.borderless)
+                .accessibilityLabel("Remove per-app shortcuts for \(override.displayName)")
                 .help("Remove this app's overrides. Cotabby will use the global accept keys here.")
             }
 
