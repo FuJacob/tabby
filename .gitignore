@@ -34,8 +34,12 @@ posts.txt
 
 # Claude Code
 .claude/worktrees/
+.claude/scheduled_tasks.lock
 
 # Large model files — keep out of git
 *.gguf
 *.bin
 .rocketride/
+
+.agents
+.internal

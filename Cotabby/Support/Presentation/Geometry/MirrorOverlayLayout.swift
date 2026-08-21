@@ -1,0 +1,257 @@
+import AppKit
+import CoreGraphics
+import Foundation
+
+/// Pure layout math for the mirror-overlay rendering mode.
+///
+/// Mirror mode is reached when the host's caret geometry is not precise enough for inline text.
+/// The card can still use the caret's vertical line box: estimated single-line fallbacks deliberately
+/// center that box inside the field chrome, while multiline/full-frame fallbacks keep its bottom edge
+/// aligned with the field. This lets the popup follow the visible text without claiming enough
+/// precision to draw glyphs inline.
+///
+/// Layout decisions live here as a pure value type so `OverlayController` can stay focused on
+/// AppKit window plumbing and the rules below stay easy to test without spinning up SwiftUI.
+struct MirrorOverlayLayout: Equatable {
+    /// Final panel frame in screen coordinates. The caller passes this directly to `NSPanel.setFrame`.
+    let panelFrame: CGRect
+
+    /// Fixed font size for the suggestion text. Mirror mode deliberately ignores the caret-derived
+    /// font sizing used by inline ghost text. The whole reason we are in mirror mode is that the
+    /// caret rect (and therefore its height) is untrustworthy, so deriving font size from it would
+    /// just propagate the same unreliable signal into the UI.
+    let fontSize: CGFloat
+
+    /// The suggestion to render. Whitespace collapsed for single-line display.
+    let suggestionText: String
+
+    /// The leading run of `suggestionText` that the next accept-word keypress will insert, so the
+    /// card can highlight it as the word being completed. Always a prefix of `suggestionText` (empty
+    /// when there is nothing to highlight) so the renderer can split safely on its length.
+    let highlightedPrefix: String
+
+    /// Reading direction for the host text. The card lays out left-to-right even in RTL hosts so the
+    /// "[hint] [Tab]" pattern stays readable; the field is repeated as `isRightToLeft` for callers
+    /// that need to flip secondary chrome (Phase 3 prefix hint will use this).
+    let isRightToLeft: Bool
+
+    /// Which trigger surfaced this presentation. Plumbed through purely for diagnostics so the
+    /// debug overlay can show why mirror mode is up.
+    let reason: CompletionRenderMode.MirrorReason
+
+    private enum Metrics {
+        /// Fixed font size for the suggestion in the card. Sized for legibility at typical viewing
+        /// distance, not to match the host editor (mirror is explicitly a preview, not a forgery).
+        static let fontSize: CGFloat = 13
+
+        /// Tight visual gap between the bottom of the input field (or caret rect) and the top of
+        /// the card. The card already has a distinct backdrop, so it does not need a full text-row
+        /// buffer to read as separate UI.
+        static let anchorGap: CGFloat = 1
+
+        /// Internal padding inside the card around the text + keycap row. Must stay in lockstep with
+        /// the `.padding` on `MirrorOverlayView`, since the card fills this computed panel frame.
+        static let horizontalPadding: CGFloat = 10
+        static let verticalPadding: CGFloat = 4
+
+        /// Estimated keycap pill width (matches GhostKeycap's roughly 28pt label + spacing). Used to
+        /// reserve room for the acceptance hint when computing card width.
+        static let keycapReservation: CGFloat = 36
+
+        /// Width budget cap. The card hugs short suggestions instead of imposing a minimum text
+        /// width, while long completions clamp to a comfortable reading width and SwiftUI supplies
+        /// the trailing ellipsis.
+        static let maxCardWidth: CGFloat = 520
+
+        /// Distance the card must keep from screen edges so it never clips against the menu bar or
+        /// dock. The visibleFrame already excludes those, but a small inset still looks more
+        /// intentional than touching the edge.
+        static let screenMargin: CGFloat = 12
+    }
+
+    /// Computes the layout for one presentation.
+    ///
+    /// The caret line is the preferred vertical anchor. AXFrame-only multiline and degenerate
+    /// fallbacks share the field's bottom edge, so they naturally retain the conservative field
+    /// anchor. `visibleFrame` is the target screen's visible region and keeps the card on-screen.
+    static func make(
+        suggestion: String,
+        geometry: SuggestionOverlayGeometry,
+        visibleFrame: CGRect,
+        showsAcceptanceHint: Bool,
+        autoAcceptTrailingPunctuation: Bool = true,
+        sizeMultiplier: CGFloat = 1,
+        reason: CompletionRenderMode.MirrorReason
+    ) -> MirrorOverlayLayout {
+        let normalizedSuggestion = normalizedDisplayText(suggestion)
+        let highlightedPrefix = highlightedAcceptancePrefix(
+            in: normalizedSuggestion,
+            autoAcceptTrailingPunctuation: autoAcceptTrailingPunctuation
+        )
+        // Mirror mode's font is fixed (the caret height is untrustworthy here), but the user's
+        // "Ghost Text Size" knob still scales it so suggestions stay one consistent size across both
+        // display modes. The shared legibility floor guards a low multiplier; the keycap pill keeps
+        // its own fixed size, so its width reservation below is intentionally left unscaled.
+        let scaledFontSize = max(GhostFontMetrics.absoluteMinimumPointSize, Metrics.fontSize * sizeMultiplier)
+        let measuredTextWidth = measuredWidth(of: normalizedSuggestion, fontSize: scaledFontSize)
+        let keycapReservation = showsAcceptanceHint ? Metrics.keycapReservation : 0
+
+        // Reserve the keycap on top of the measured text width so the panel follows the actual
+        // suggestion rather than carrying empty space from an arbitrary minimum card width.
+        let textBudget = max(0, Metrics.maxCardWidth - keycapReservation)
+        let textContentWidth = min(textBudget, measuredTextWidth)
+        let contentWidth = textContentWidth + keycapReservation
+        let cardWidth = contentWidth + (Metrics.horizontalPadding * 2)
+        let cardHeight = ceil(scaledFontSize * 1.6) + (Metrics.verticalPadding * 2)
+
+        let anchorTopY = computeAnchorTopY(geometry: geometry, reason: reason)
+        var originX = computeAnchorOriginX(geometry: geometry, cardWidth: cardWidth)
+        // Card sits BELOW the field/caret. AppKit screen coordinates are bottom-up, so subtracting
+        // the card height from the anchor's bottom edge places the card just under the anchor line.
+        var originY = anchorTopY - cardHeight
+
+        // Clamp to the visible frame so the card never disappears off-screen for hosts near edges.
+        let minX = visibleFrame.minX + Metrics.screenMargin
+        let maxX = visibleFrame.maxX - Metrics.screenMargin - cardWidth
+        if maxX >= minX {
+            originX = min(max(originX, minX), maxX)
+        } else {
+            originX = minX
+        }
+
+        let minY = visibleFrame.minY + Metrics.screenMargin
+        let maxY = visibleFrame.maxY - Metrics.screenMargin - cardHeight
+        if maxY >= minY {
+            originY = min(max(originY, minY), maxY)
+        } else {
+            originY = minY
+        }
+
+        let panelFrame = CGRect(
+            x: originX,
+            y: originY,
+            width: cardWidth,
+            height: cardHeight
+        ).integral
+
+        return MirrorOverlayLayout(
+            panelFrame: panelFrame,
+            fontSize: scaledFontSize,
+            suggestionText: normalizedSuggestion,
+            highlightedPrefix: highlightedPrefix,
+            isRightToLeft: geometry.isRightToLeft,
+            reason: reason
+        )
+    }
+
+    /// The Y coordinate the card sits *under*. In AppKit's bottom-up coordinate system this is the
+    /// bottom edge of the anchor minus the gap.
+    ///
+    /// The anchor choice depends on *why* mirror mode is active:
+    ///
+    /// - `.caretGeometryEstimated` means the host did not expose a caret precise enough for inline
+    ///   glyphs. Its vertical line box is still useful: AXFrame-only single-line estimates center it
+    ///   inside the field, while multiline/full-frame estimates share the field's bottom edge.
+    /// - `.userPreference`, `.perAppOverride`, and `.caretMidLine` all mean the caret geometry is
+    ///   trustworthy (`.exact` or `.derived`); the card is up because the user pinned popup mode or
+    ///   the caret is mid-line. Anchoring to the field rect would waste the precise caret signal and
+    ///   land the card far below where the eye is, so we anchor to the caret rect instead, with the
+    ///   input field as a safety net only for the degenerate case where the caret rect is empty.
+    private static func computeAnchorTopY(
+        geometry: SuggestionOverlayGeometry,
+        reason: CompletionRenderMode.MirrorReason
+    ) -> CGFloat {
+        switch reason {
+        case .caretGeometryEstimated:
+            // `AXTextGeometryResolver.estimatedCaretRect` gives single-line fields a centered line
+            // box instead of the full control height. Anchoring to that rect removes the extra
+            // chrome padding that previously dropped omnibox popups by roughly one text row. For
+            // multiline or unrefined AXFrame fallbacks, caret.minY equals inputFrame.minY, so this
+            // preserves the old conservative field-bottom placement.
+            if !geometry.caretRect.isEmpty {
+                return geometry.caretRect.minY - Metrics.anchorGap
+            }
+            if let inputFrame = geometry.inputFrameRect?.standardized, !inputFrame.isEmpty {
+                return inputFrame.minY - Metrics.anchorGap
+            }
+            return geometry.caretRect.minY - Metrics.anchorGap
+
+        case .caretLayoutEstimated:
+            // The hidden-TextKit repair located the caret, so anchor to that estimated caret rect
+            // rather than the whole field — the popup should track the cursor, not float below the
+            // document. Keep the same tight visual gap used for trusted caret geometry: the caret
+            // rect already describes the full line box, so another line-height offset would create
+            // an unnecessary blank row between the typed line and the card.
+            if !geometry.caretRect.isEmpty {
+                return geometry.caretRect.minY - Metrics.anchorGap
+            }
+            if let inputFrame = geometry.inputFrameRect?.standardized, !inputFrame.isEmpty {
+                return inputFrame.minY - Metrics.anchorGap
+            }
+            return geometry.caretRect.minY - Metrics.anchorGap
+
+        case .userPreference, .perAppOverride, .caretMidLine:
+            // Caret geometry is trustworthy in these cases. Sit just under the caret line so the
+            // popup tracks the cursor like the inline ghost does, instead of floating below the
+            // entire field.
+            if !geometry.caretRect.isEmpty {
+                return geometry.caretRect.minY - Metrics.anchorGap
+            }
+            if let inputFrame = geometry.inputFrameRect?.standardized, !inputFrame.isEmpty {
+                return inputFrame.minY - Metrics.anchorGap
+            }
+            return geometry.caretRect.minY - Metrics.anchorGap
+        }
+    }
+
+    /// Aligns the card's leading edge with the caret: the left edge starts at the caret's trailing
+    /// edge for LTR text, while the right edge starts at the caret's trailing edge for RTL text.
+    /// A degenerate caret falls back to centering the card beneath the field.
+    private static func computeAnchorOriginX(
+        geometry: SuggestionOverlayGeometry,
+        cardWidth: CGFloat
+    ) -> CGFloat {
+        if geometry.caretRect.width > 0 || geometry.caretRect.minX > 0 {
+            return geometry.isRightToLeft
+                ? geometry.caretRect.minX - cardWidth
+                : geometry.caretRect.maxX
+        }
+        if let inputFrame = geometry.inputFrameRect?.standardized, !inputFrame.isEmpty {
+            return inputFrame.midX - (cardWidth / 2)
+        }
+        return geometry.isRightToLeft
+            ? geometry.caretRect.minX - cardWidth
+            : geometry.caretRect.maxX
+    }
+
+    /// The leading run of `suggestionText` the accept-word key will insert next, reused from the real
+    /// acceptance chunker (`SuggestionSessionReconciler.nextAcceptanceChunk`) so the highlight matches
+    /// exactly what one Tab takes, including the trailing-punctuation policy. Guarded to be a prefix of
+    /// `suggestionText` so the renderer's split-by-length is always safe; returns "" otherwise.
+    static func highlightedAcceptancePrefix(
+        in suggestionText: String,
+        autoAcceptTrailingPunctuation: Bool
+    ) -> String {
+        let chunk = SuggestionSessionReconciler.nextAcceptanceChunk(
+            from: suggestionText,
+            autoAcceptTrailingPunctuation: autoAcceptTrailingPunctuation
+        )
+        return suggestionText.hasPrefix(chunk) ? chunk : ""
+    }
+
+    /// Collapses internal whitespace and trims edges so the card never renders a multi-line block.
+    /// Mirror mode is single-line by design — the inline ghost is what handles multi-line wrapping.
+    private static func normalizedDisplayText(_ text: String) -> String {
+        let collapsed = text
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        return collapsed
+    }
+
+    private static func measuredWidth(of text: String, fontSize: CGFloat) -> CGFloat {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: fontSize)
+        ]
+        return (text as NSString).size(withAttributes: attributes).width
+    }
+}

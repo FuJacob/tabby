@@ -298,7 +298,6 @@ final class CotabbyAppEnvironment {
             inserter: suggestionInserter,
             isEnabled: { suggestionSettings.isEmojiPickerEnabled },
             emojiPreferences: { suggestionSettings.emojiVariantPreferences },
-            acceptKeyLabel: { suggestionSettings.emojiPickerAcceptKeyLabel },
             emojiUsage: { emojiUsageStore.snapshot() },
             recordEmojiUsage: { emojiUsageStore.record(alias: $0) }
         )
@@ -459,9 +458,10 @@ final class CotabbyAppEnvironment {
         }
     }
 
-    /// Connect once when the endpoint engine becomes active. Configuration edits only invalidate
-    /// discovery so status never describes a different URL, mode, credential, or active model;
-    /// Settings still owns explicit Connect/Return refreshes and avoids network traffic per keystroke.
+    /// Connect once when the endpoint engine becomes active. Only server identity and credentials
+    /// invalidate discovery: the selected model and generation route do not affect `GET /models`,
+    /// so changing either must keep the catalog and connected status alive. Settings still owns
+    /// explicit Connect/Return refreshes and avoids network traffic per keystroke.
     private func observeOpenAICompatibleSelection() {
         suggestionSettings.$selectedEngine
             .removeDuplicates()
@@ -485,8 +485,6 @@ final class CotabbyAppEnvironment {
 
         let configurationChanges: [AnyPublisher<Void, Never>] = [
             suggestionSettings.$openAICompatibleBaseURL.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            suggestionSettings.$openAICompatibleModelName.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            suggestionSettings.$openAICompatibleAPIMode.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             suggestionSettings.$endpointCredentialRevision.dropFirst().map { _ in () }.eraseToAnyPublisher()
         ]
 

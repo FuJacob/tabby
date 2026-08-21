@@ -2,19 +2,21 @@
 
 ## Project Identity
 
-Cotabby is a macOS menu bar app for on-device inline autocomplete. The core loop is:
+Cotabby is a macOS menu bar app for local-first inline autocomplete. The core loop is:
 
 1. Track the currently focused editable field through Accessibility.
 2. Monitor global keyboard input without stealing focus.
 3. Decide whether the field, permissions, settings, and runtime are eligible.
 4. Build an autocomplete request from the focused text context and optional visual context.
-5. Generate locally through Apple Intelligence or llama.cpp.
+5. Generate through Apple Intelligence, in-process llama.cpp, or a configured OpenAI-compatible
+   endpoint.
 6. Normalize the model output into a short continuation.
 7. Render ghost text near the caret.
 8. Insert accepted chunks when the user presses `Tab` while keeping the remaining tail alive.
 
-Privacy and local-first behavior matter. Do not introduce hosted API dependencies unless the user
-explicitly asks for that direction.
+Apple Intelligence and llama.cpp run on the Mac. The endpoint backend may send the same bounded
+request to loopback, LAN, or public HTTPS when the user explicitly selects it. Do not add or broaden
+hosted transmission without explicit user scope and clear disclosure.
 
 ## Learning-First Collaboration
 
@@ -43,19 +45,26 @@ When adding a `struct`, `class`, `enum`, actor, or protocol, explain:
 ## Repository Map
 
 - `Cotabby/App/`: app entrypoint, composition root, lifecycle wiring, and coordinators.
-- `Cotabby/UI/`: SwiftUI/AppKit presentation: settings, onboarding, menu views, overlays, and
-  visual affordances.
-- `Cotabby/Services/`: side-effectful boundaries: Accessibility, input monitoring, text insertion,
-  screenshots/OCR, visual context, llama runtime, permissions, downloads, updates, and launch
-  services.
-- `Cotabby/Models/`: shared value types, settings snapshots, states, domain models, and protocol
-  contracts.
-- `Cotabby/Support/`: pure helper logic, prompt rendering, availability rules, normalization,
-  reconciliation, geometry helpers, and low-level bridging utilities.
-- `CotabbyTests/`: unit and microbench tests. Prefer testing pure `Support/` and `Models/` logic
-  when possible.
+- `Cotabby/UI/`: SwiftUI presentation grouped into menus, settings, onboarding, overlays, inline
+  features, and reusable components.
+- `Cotabby/Services/`: side effects and OS/runtime boundaries. AppKit panel controllers live under
+  `Presentation`; other folders own focus, input, context, insertion, visual capture, inference,
+  model management, permissions, power, spelling, and updates.
+- `Cotabby/Models/`: shared values, settings snapshots, states, domain models, and contracts grouped
+  by subsystem.
+- `Cotabby/Support/`: deterministic policy, prompting, normalization, reconciliation, geometry,
+  sanitization, logging, and low-level bridging helpers grouped by subsystem.
+- `CotabbyTests/`: unit and microbench tests that mirror the production subsystem map. Prefer
+  testing pure `Support/` and `Models/` logic when possible.
 - `CotabbyInference`: the llama.cpp wrapper, consumed as a SwiftPM package
   (`github.com/FuJacob/cotabbyinference`, pinned to `main`) rather than vendored in-tree.
+
+Within a subsystem, child folders describe stable responsibilities rather than Swift namespaces.
+Examples include `Services/Runtime/{AppleIntelligence,Llama,OpenAICompatible}` and
+`Support/Suggestion/{Request,Output,Acceptance,Session,Streaming}`. Keep a cohesive small subsystem
+flat; add a child folder only when at least two files share a responsibility that a maintainer can
+predict from its name. `SOURCE_LAYOUT.md` is the canonical placement map, and tests should mirror
+the production responsibility wherever a direct correspondence exists.
 
 ## App Ownership
 
@@ -69,6 +78,12 @@ Start here when you need to understand lifecycle:
 and wires cross-subsystem subscriptions. SwiftUI views should observe objects from that graph
 rather than creating services directly.
 
+`SuggestionSettingsModel` remains the individually `@Published` UI-facing compatibility surface.
+Its `domainSettings` projection groups the same durable values into general, engine, completion,
+context, correction, presentation, inline-feature, and shortcut domains. `SuggestionSettingsStore`
+keeps the existing flat UserDefaults keys stable, and `SuggestionSettingsSnapshot` is the immutable
+behavior boundary consumed by the suggestion pipeline.
+
 This ownership rule prevents duplicate Accessibility observers, duplicate input monitors, runtime
 reload races, and mismatched settings state.
 
@@ -76,13 +91,14 @@ reload races, and mismatched settings state.
 
 Read the coordinator in this order:
 
-1. `Cotabby/App/Coordinators/SuggestionCoordinator.swift`
-2. `Cotabby/App/Coordinators/SuggestionCoordinator+Lifecycle.swift`
-3. `Cotabby/App/Coordinators/SuggestionCoordinator+Input.swift`
-4. `Cotabby/App/Coordinators/SuggestionCoordinator+Prediction.swift`
-5. `Cotabby/App/Coordinators/SuggestionCoordinator+Acceptance.swift`
+1. `Cotabby/App/Coordinators/Suggestion/SuggestionCoordinator.swift`
+2. `Cotabby/App/Coordinators/Suggestion/SuggestionCoordinator+Lifecycle.swift`
+3. `Cotabby/App/Coordinators/Suggestion/SuggestionCoordinator+Input.swift`
+4. `Cotabby/App/Coordinators/Suggestion/SuggestionCoordinator+Prediction.swift`
+5. `Cotabby/App/Coordinators/Suggestion/SuggestionCoordinator+Acceptance.swift`
 
-The coordinator owns orchestration and user-facing state. It should not absorb every rule. Prefer:
+The coordinator owns orchestration plus active suggestion and presentation state. It should not
+absorb every rule or state transition. Prefer:
 
 - `SuggestionRequestFactory` for pure request construction
 - `SuggestionAvailabilityEvaluator` for pure gating decisions
@@ -90,6 +106,8 @@ The coordinator owns orchestration and user-facing state. It should not absorb e
 - `SuggestionTextNormalizer` for backend-independent output cleanup
 - `SuggestionWorkController` for generation task identity/cancellation
 - `SuggestionInteractionState` for active suggestion session storage
+- `SuggestionStreamingState` for latest-wins partial coalescing and monotonic rendering state
+- `PostExhaustionAcceptanceState` for the bounded rapid-accept window after a tail is exhausted
 
 This split matters because autocomplete is a state machine. Pure rules are easier to test and reason
 about than coordinator mutations.
@@ -102,7 +120,8 @@ Focus and geometry live in:
 - `FocusSnapshotResolver`: reduces raw AX elements into Cotabby-supported focus snapshots.
 - `AXTextGeometryResolver`: resolves caret and input geometry.
 - `AXHelper`: low-level Accessibility/Core Foundation helper calls.
-- `FocusModels`: pure focus values, identities, capabilities, and debug inspection data.
+- `FocusModels`: pure focus values, identities, capabilities, stale-result signatures, and the
+  lightweight `FocusPollingEvent` used by the developer overlay.
 
 Accessibility data is eventually consistent and app-specific. Browser editors, Electron apps,
 native AppKit fields, and secure fields expose different AX shapes. Preserve stale-result guards,
@@ -128,14 +147,15 @@ from Accessibility and Input Monitoring.
 
 Runtime generation is split by responsibility:
 
-- `SuggestionEngineRouter`: selects Apple Intelligence vs Open Source.
+- `SuggestionEngineRouter`: selects Apple Intelligence, Open Source, or the configured
+  OpenAI-compatible endpoint and owns the narrow Apple-to-llama language fallback.
 - `FoundationModelSuggestionEngine`: Apple on-device generation path.
 - `LlamaSuggestionEngine`: request-to-prompt, llama result handling, and cache reset handoff.
+- `OpenAICompatibleSuggestionEngine`: completion/chat transport, SSE streaming, and Ollama preload
+  behavior for the configured endpoint.
 - `LlamaRuntimeManager`: UI-facing runtime state, model selection, warmup, and lifecycle control.
-- `LlamaRuntimeCore`: serialized actor around mutable llama.cpp pointers, prompt tokenization,
-  KV-cache reuse, sampling, an optional deterministic constrained decoder
-  (`runConstrainedDecode`, gated behind the default-off `cotabbyConstrainedDecoderEnabled`), and
-  shutdown.
+- `LlamaRuntimeCore`: explicitly serialized native boundary around mutable llama.cpp pointers,
+  prompt tokenization, KV-cache reuse, built-in sampler delegation, cancellation, and shutdown.
 - `BaseCompletionPromptRenderer`: prompt construction for the Open Source path. The llama models are
   now *base* (non-instruct) GGUFs, so this renders a pure text continuation: no instruction preamble,
   custom rules and context fold into a short conditioning preface (a base model conditions on
@@ -143,8 +163,13 @@ Runtime generation is split by responsibility:
   and the caret prefix comes last. `FoundationModelPromptRenderer` stays instruct-shaped because
   Apple's Foundation Models path gives us a first-class instructions channel.
 
-Keep llama.cpp pointer work serialized inside `LlamaRuntimeCore`. The manager should publish state;
-the core should own native correctness.
+`LlamaRuntimeCore` is not a Swift actor. Its locks and lifecycle condition keep native pointer,
+cache/decode, and shutdown work serialized while heavy generation runs away from MainActor. The
+manager should publish state; the core should own native correctness.
+
+Cotabby owns one autocomplete sequence. CotabbyInference therefore exposes one live native sequence
+backed by llama.cpp slot zero; a changing external sequence ID rejects stale handles after reset.
+The Swift generation loop owns the maximum output-token budget.
 
 ## UI And Overlays
 
