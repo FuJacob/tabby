@@ -28,12 +28,27 @@ final class RigPermissionProvider: SuggestionPermissionProviding {
 
 @MainActor
 final class RigLowPowerModeProvider: SuggestionLowPowerModeProviding {
-    var isLowPowerModeEnabled = false
+    private(set) var isLowPowerModeEnabled: Bool
 
-    let subject = PassthroughSubject<Bool, Never>()
+    private let subject = PassthroughSubject<Bool, Never>()
 
-    var isLowPowerModeEnabledPublisher: AnyPublisher<Bool, Never> {
+    init(isLowPowerModeEnabled: Bool = false) {
+        self.isLowPowerModeEnabled = isLowPowerModeEnabled
+    }
+
+    var lowPowerModeChanges: AnyPublisher<Bool, Never> {
         subject.eraseToAnyPublisher()
+    }
+
+    /// Updates both halves of the provider contract so tests exercise the same live subscription
+    /// path as production instead of calling the coordinator's event handler directly.
+    func setLowPowerModeEnabled(_ enabled: Bool) {
+        guard isLowPowerModeEnabled != enabled else {
+            return
+        }
+
+        isLowPowerModeEnabled = enabled
+        subject.send(enabled)
     }
 }
 
@@ -234,6 +249,7 @@ func makeCoordinatorRig(
     snapshot: FocusedInputSnapshot = CotabbyTestFixtures.focusedInputSnapshot(precedingText: "Hello"),
     capability: FocusCapability = .supported,
     overlayState: OverlayState = .hidden(reason: "initial"),
+    lowPowerModeEnabled: Bool = false,
     settingsSnapshot: SuggestionSettingsSnapshot = CotabbyTestFixtures.settingsSnapshot(debounceMilliseconds: 1)
 ) -> CoordinatorRig {
     let focusSnapshot = FocusSnapshot(
@@ -243,7 +259,7 @@ func makeCoordinatorRig(
         context: snapshot
     )
     let permissionProvider = RigPermissionProvider()
-    let lowPowerModeProvider = RigLowPowerModeProvider()
+    let lowPowerModeProvider = RigLowPowerModeProvider(isLowPowerModeEnabled: lowPowerModeEnabled)
     let focusProvider = RigFocusProvider(snapshot: focusSnapshot)
     let inputMonitor = RigInputMonitor()
     let overlayController = RigOverlayController(state: overlayState)

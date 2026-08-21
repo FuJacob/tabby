@@ -212,8 +212,7 @@ final class SuggestionCoordinator: ObservableObject {
             }
             .store(in: &cancellables)
 
-        lowPowerModeProvider.isLowPowerModeEnabledPublisher
-            .dropFirst()
+        lowPowerModeProvider.lowPowerModeChanges
             .sink { [weak self] _ in
                 self?.handleLowPowerModeChange()
             }

@@ -122,8 +122,13 @@ final class SuggestionCoordinatorLifecycleTests: XCTestCase {
     /// while the Mac is already in Low Power Mode must not restart generation, exactly like the
     /// global-off and paused cases it shares a gating tier with.
     func test_settingsChange_autoDisablingWhileAlreadyInLowPowerModeDoesNotRestartThePipeline() {
-        let rig = retained(makeCoordinatorRig())
-        rig.lowPowerModeProvider.isLowPowerModeEnabled = true
+        let rig = retained(makeCoordinatorRig(
+            lowPowerModeEnabled: true,
+            settingsSnapshot: CotabbyTestFixtures.settingsSnapshot(
+                isLowPowerModeAutoDisableEnabled: false,
+                debounceMilliseconds: 1
+            )
+        ))
 
         rig.coordinator.handleSuggestionSettingsChange(
             CotabbyTestFixtures.settingsSnapshot(

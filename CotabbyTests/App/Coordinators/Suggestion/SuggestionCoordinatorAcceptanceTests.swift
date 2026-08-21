@@ -541,7 +541,7 @@ private final class StubSuggestionLowPowerModeProvider: SuggestionLowPowerModePr
 
     private let subject = PassthroughSubject<Bool, Never>()
 
-    var isLowPowerModeEnabledPublisher: AnyPublisher<Bool, Never> {
+    var lowPowerModeChanges: AnyPublisher<Bool, Never> {
         subject.eraseToAnyPublisher()
     }
 }

@@ -309,28 +309,44 @@ final class SuggestionCoordinatorInputTests: XCTestCase {
 
     // MARK: - Low Power Mode changes
 
-    func test_lowPowerModeChange_disablesPipelineWhenActiveAndAutoDisableEnabled() {
+    func test_lowPowerModePublisher_disablesPipelineWhenActiveAndAutoDisableEnabled() {
         // The fixture default (`isLowPowerModeAutoDisableEnabled: true`) mirrors production.
         let rig = retained(makeCoordinatorRig())
-        rig.lowPowerModeProvider.isLowPowerModeEnabled = true
 
-        rig.coordinator.handleLowPowerModeChange()
+        rig.lowPowerModeProvider.setLowPowerModeEnabled(true)
 
         guard case let .disabled(reason) = rig.coordinator.state else {
             return XCTFail("Expected disabled, got \(rig.coordinator.state)")
         }
         XCTAssertEqual(reason, "Cotabby is paused because Low Power Mode is on.")
+        XCTAssertEqual(rig.visualContext.cancelCalls, [true])
     }
 
-    func test_lowPowerModeChange_leavesPipelineRunningWhenAutoDisableOptedOut() {
+    func test_lowPowerModePublisher_leavesPipelineRunningWhenAutoDisableOptedOut() {
         let rig = retained(makeCoordinatorRig(
             settingsSnapshot: CotabbyTestFixtures.settingsSnapshot(isLowPowerModeAutoDisableEnabled: false)
         ))
-        rig.lowPowerModeProvider.isLowPowerModeEnabled = true
 
-        rig.coordinator.handleLowPowerModeChange()
+        rig.lowPowerModeProvider.setLowPowerModeEnabled(true)
 
-        XCTAssertEqual(rig.coordinator.state, .idle, "Opting out must keep autocomplete running in Low Power Mode")
+        XCTAssertEqual(
+            rig.coordinator.state,
+            .idle,
+            "Opting out must keep autocomplete running in Low Power Mode"
+        )
+    }
+
+    func test_lowPowerModePublisher_reenablesPipelineWhenModeTurnsOff() {
+        let rig = retained(makeCoordinatorRig())
+        rig.lowPowerModeProvider.setLowPowerModeEnabled(true)
+
+        rig.lowPowerModeProvider.setLowPowerModeEnabled(false)
+
+        XCTAssertEqual(rig.coordinator.state, .idle)
+        XCTAssertFalse(
+            rig.visualContext.startedSessions.isEmpty,
+            "Leaving Low Power Mode should resume context capture"
+        )
     }
 
     func test_suppressedSyntheticInput_logsWithoutMutatingState() {

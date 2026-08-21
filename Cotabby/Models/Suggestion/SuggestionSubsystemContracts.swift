@@ -22,13 +22,13 @@ protocol SuggestionPermissionProviding: AnyObject {
     var screenRecordingGrantedPublisher: AnyPublisher<Bool, Never> { get }
 }
 
-/// Live OS-level Low Power Mode state, mirroring `SuggestionPermissionProviding`'s shape: a
-/// synchronous read plus an erased publisher so the coordinator can subscribe without depending on
-/// `LowPowerModeMonitor`'s concrete `@Published` storage.
+/// Live OS-level Low Power Mode state: a synchronous read for the initial gate plus a changes-only
+/// stream for later transitions. Keeping those roles explicit prevents a subscriber from having to
+/// guess whether the publisher begins with a bootstrap value or its first real OS change.
 @MainActor
 protocol SuggestionLowPowerModeProviding: AnyObject {
     var isLowPowerModeEnabled: Bool { get }
-    var isLowPowerModeEnabledPublisher: AnyPublisher<Bool, Never> { get }
+    var lowPowerModeChanges: AnyPublisher<Bool, Never> { get }
 }
 
 @MainActor

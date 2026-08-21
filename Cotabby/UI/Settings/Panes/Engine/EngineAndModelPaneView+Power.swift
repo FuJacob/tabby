@@ -20,8 +20,7 @@ extension EngineAndModelPaneView {
             ) {
                 SettingsRowLabel(
                     title: "Pause in Low Power Mode",
-                    description: "Automatically pause suggestions while your Mac is in Low Power " +
-                        "Mode, so Cotabby doesn't work against its battery-saving throttling.",
+                    description: "Pause suggestions while Low Power Mode is on to reduce battery use.",
                     systemImage: "bolt.slash.circle"
                 )
             }
