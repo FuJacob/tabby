@@ -114,6 +114,33 @@ final class ModelDownloadManagerTests: XCTestCase {
         XCTAssertEqual(manager.state(for: model), .downloaded)
     }
 
+    func test_inactiveCancelRemovesOnlySourceScopedResumeDirectory() throws {
+        let model = try makeModel(source: "https://example.com/second/shared.gguf")
+        let scopedDirectory = Aria2StagingDirectoryResolver.directory(
+            in: tempDir,
+            downloadURL: model.downloadURL,
+            filename: model.filename
+        )
+        let ambiguousLegacyDirectory = tempDir.appendingPathComponent(
+            ".aria2-staging-shared.gguf",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: scopedDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: ambiguousLegacyDirectory,
+            withIntermediateDirectories: true
+        )
+        let manager = makeManager()
+
+        manager.cancel(model)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: scopedDirectory.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ambiguousLegacyDirectory.path))
+    }
+
     private func makeManager() -> ModelDownloadManager {
         let manager = ModelDownloadManager(runtimeDirectoryURL: tempDir)
         Self.retainedManagers.append(manager)

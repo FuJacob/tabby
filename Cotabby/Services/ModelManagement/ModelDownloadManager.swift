@@ -713,22 +713,12 @@ final class ModelDownloadManager: ObservableObject {
         )
     }
 
-    /// Older builds used a filename-only directory. It is safe to remove that one exact path,
-    /// but never enumerate suffix matches because other repositories may use the same filename.
-    private func legacyAria2StagingDirectoryURL(filename: String) -> URL {
-        Aria2StagingDirectoryResolver.legacyDirectory(
-            in: runtimeDirectoryURL,
-            filename: filename
-        )
-    }
-
     /// Removes only the active source's resume state after its backend has stopped.
+    /// Filename-only directories from development builds are intentionally left untouched because
+    /// they contain no source identity and therefore cannot be deleted safely on this model's behalf.
     private func removeResumeArtifacts(for model: DownloadableRuntimeModel) {
         urlSessionResumeDataByID.removeValue(forKey: model.id)
         try? FileManager.default.removeItem(at: aria2StagingDirectoryURL(for: model))
-        try? FileManager.default.removeItem(
-            at: legacyAria2StagingDirectoryURL(filename: model.filename)
-        )
     }
 
     private func isInstalled(model: DownloadableRuntimeModel) -> Bool {

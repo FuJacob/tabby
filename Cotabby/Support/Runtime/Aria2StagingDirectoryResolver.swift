@@ -20,13 +20,6 @@ nonisolated enum Aria2StagingDirectoryResolver {
         )
     }
 
-    static func legacyDirectory(in runtimeDirectory: URL, filename: String) -> URL {
-        runtimeDirectory.appendingPathComponent(
-            ".aria2-staging-\(leafFilename(filename))",
-            isDirectory: true
-        )
-    }
-
     private static func leafFilename(_ filename: String) -> String {
         (filename as NSString).lastPathComponent
     }
