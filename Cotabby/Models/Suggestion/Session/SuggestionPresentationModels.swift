@@ -23,6 +23,8 @@ struct SuggestionOverlayGeometry: Equatable, Sendable {
     let caretRect: CGRect
     let inputFrameRect: CGRect?
     let caretQuality: CaretGeometryQuality
+    /// Host identity used to resolve presentation that varies by app.
+    let bundleIdentifier: String?
     /// True when the caret is at the end of its line: only whitespace, if anything, precedes the
     /// next line break. When false, real characters follow the caret on this line, so the
     /// render-mode policy promotes the suggestion to the card: inline ghost text would otherwise
@@ -57,6 +59,7 @@ struct SuggestionOverlayGeometry: Equatable, Sendable {
         caretRect: CGRect,
         inputFrameRect: CGRect?,
         caretQuality: CaretGeometryQuality,
+        bundleIdentifier: String? = nil,
         isCaretAtEndOfLine: Bool = true,
         observedCharWidth: CGFloat?,
         isRightToLeft: Bool,
@@ -68,6 +71,7 @@ struct SuggestionOverlayGeometry: Equatable, Sendable {
         self.caretRect = caretRect
         self.inputFrameRect = inputFrameRect
         self.caretQuality = caretQuality
+        self.bundleIdentifier = bundleIdentifier
         self.isCaretAtEndOfLine = isCaretAtEndOfLine
         self.observedCharWidth = observedCharWidth
         self.isRightToLeft = isRightToLeft
@@ -84,6 +88,7 @@ struct SuggestionOverlayGeometry: Equatable, Sendable {
             caretRect: caretRect,
             inputFrameRect: inputFrameRect,
             caretQuality: caretQuality,
+            bundleIdentifier: bundleIdentifier,
             isCaretAtEndOfLine: isCaretAtEndOfLine,
             observedCharWidth: observedCharWidth,
             isRightToLeft: isRightToLeft,

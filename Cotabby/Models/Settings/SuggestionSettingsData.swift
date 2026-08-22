@@ -88,17 +88,18 @@ struct SuggestionInlineFeatureSettings: Equatable {
 
 /// One complete physical key binding. Keeping key code, modifiers, and label together prevents a
 /// domain value from representing a half-updated shortcut.
-struct SuggestionShortcutBindingSettings: Equatable {
+struct SuggestionShortcutBindingSettings: Codable, Equatable, Sendable {
     var keyCode: CGKeyCode
     var modifiers: ShortcutModifierMask
     var label: String
 }
 
-/// The three independently configurable shortcut actions.
+/// The independently configurable shortcut actions and app-specific overrides.
 struct SuggestionShortcutSettings: Equatable {
     var acceptance: SuggestionShortcutBindingSettings
     var fullAcceptance: SuggestionShortcutBindingSettings
     var globalToggle: SuggestionShortcutBindingSettings
+    var perAppOverrides: [PerAppShortcutOverride]
 }
 
 /// Pure domain representation of every durable suggestion preference.
@@ -426,5 +427,10 @@ extension SuggestionSettingsData {
     var globalToggleKeyLabel: String {
         get { shortcuts.globalToggle.label }
         set { shortcuts.globalToggle.label = newValue }
+    }
+
+    var perAppShortcutOverrides: [PerAppShortcutOverride] {
+        get { shortcuts.perAppOverrides }
+        set { shortcuts.perAppOverrides = newValue }
     }
 }

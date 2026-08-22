@@ -78,10 +78,6 @@ final class CotabbyAppEnvironment {
         inputMonitor.onPointerDown = { [weak calendarAccessibilityCaptureGuard] point in
             calendarAccessibilityCaptureGuard?.handlePointerDown(atAccessibilityPoint: point)
         }
-        inputMonitor.acceptanceKeyCodeProvider = { suggestionSettings.acceptanceKeyCode }
-        inputMonitor.acceptanceKeyModifiersProvider = { suggestionSettings.acceptanceKeyModifiers }
-        inputMonitor.fullAcceptanceKeyCodeProvider = { suggestionSettings.fullAcceptanceKeyCode }
-        inputMonitor.fullAcceptanceKeyModifiersProvider = { suggestionSettings.fullAcceptanceKeyModifiers }
         inputMonitor.globalToggleKeyCodeProvider = { suggestionSettings.globalToggleKeyCode }
         inputMonitor.globalToggleKeyModifiersProvider = { suggestionSettings.globalToggleKeyModifiers }
         inputMonitor.onGlobalToggleHotkey = { [weak suggestionSettings] in
@@ -129,6 +125,20 @@ final class CotabbyAppEnvironment {
                 return false
             }
             return true
+        }
+        // Resolve against the latest focus snapshot so each keystroke uses that app's binding.
+        // The snapshot can briefly lag a fast switch, matching the evaluator race above.
+        inputMonitor.acceptanceBindingProvider = { [weak focusModel] in
+            let binding = suggestionSettings.resolvedAcceptBinding(
+                forBundleIdentifier: focusModel?.snapshot.bundleIdentifier
+            )
+            return (binding.keyCode, binding.modifiers)
+        }
+        inputMonitor.fullAcceptanceBindingProvider = { [weak focusModel] in
+            let binding = suggestionSettings.resolvedFullAcceptBinding(
+                forBundleIdentifier: focusModel?.snapshot.bundleIdentifier
+            )
+            return (binding.keyCode, binding.modifiers)
         }
         let appUpdateManager = AppUpdateManager()
         let welcomeCoordinator = WelcomeCoordinator(
@@ -291,7 +301,11 @@ final class CotabbyAppEnvironment {
             focusModel: focusModel,
             inserter: suggestionInserter,
             isEnabled: { suggestionSettings.isMacroExpansionEnabled },
-            acceptKeyLabel: { suggestionSettings.emojiPickerAcceptKeyLabel },
+            acceptKeyLabel: {
+                suggestionSettings.emojiPickerAcceptKeyLabel(
+                    forBundleIdentifier: focusModel.snapshot.bundleIdentifier
+                )
+            },
             isWordAcceptKey: { inputMonitor.isWordAcceptKey($0) }
         )
         // One coordinator fans every keystroke out to both inline-command controllers and owns the
