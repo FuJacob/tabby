@@ -130,17 +130,23 @@ struct HuggingFaceModelBrowserView: View {
             case .loaded(let loadedRepoId, let ggufFiles) where loadedRepoId == repoId:
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(ggufFiles) { file in
-                        if let model = searchService.makeDownloadableModel(from: file, repoId: repoId) {
+                        if let model = HuggingFaceSearchService.makeDownloadableModel(
+                            from: file,
+                            repoId: repoId
+                        ) {
                             HFFileRow(
                                 file: file,
                                 repoId: repoId,
                                 state: modelDownloadManager.state(for: model),
-                                isInstalled: modelDownloadManager.isModelInstalled(filename: model.filename),
+                                isInstalled: modelDownloadManager.isModelInstalled(model),
                                 onDownload: {
                                     modelDownloadManager.download(model)
                                 },
+                                onPause: {
+                                    modelDownloadManager.pause(model)
+                                },
                                 onCancel: {
-                                    modelDownloadManager.cancel(filename: model.filename)
+                                    modelDownloadManager.cancel(model)
                                 }
                             )
                         }
@@ -215,6 +221,7 @@ private struct HFFileRow: View {
     let state: ModelDownloadState
     let isInstalled: Bool
     let onDownload: () -> Void
+    let onPause: () -> Void
     let onCancel: () -> Void
 
     var body: some View {
@@ -225,9 +232,9 @@ private struct HFFileRow: View {
                         .font(.system(size: 12, weight: .medium))
                         .lineLimit(1)
 
-                    Text(file.sizeLabel)
+                    Text(fileDetailText)
                         .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(fileDetailColor)
                 }
 
                 Spacer(minLength: 0)
@@ -235,14 +242,8 @@ private struct HFFileRow: View {
                 actionButton
             }
 
-            if state.isDownloading, let progress = state.progressFraction {
-                ProgressView(value: progress, total: 1)
-                    .progressViewStyle(.linear)
-                    .tint(.blue)
-            } else if state.isDownloading {
-                ProgressView()
-                    .progressViewStyle(.linear)
-                    .tint(.blue)
+            if state.isDownloading || state.isPaused {
+                ModelDownloadProgressBar(state: state)
             }
         }
         .padding(.vertical, 4)
@@ -255,7 +256,7 @@ private struct HFFileRow: View {
 
     @ViewBuilder
     private var actionButton: some View {
-        if isInstalled && !state.isDownloading {
+        if isInstalled && !state.isDownloading && !state.isPaused {
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
                 .font(.system(size: 16))
@@ -266,28 +267,13 @@ private struct HFFileRow: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
 
-            case .downloading(let progress):
-                HStack(spacing: 6) {
-                    if let progress {
-                        Text("\(Int((progress * 100).rounded()))%")
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.blue)
-                            .frame(width: 40, alignment: .trailing)
-                    } else {
-                        ProgressView()
-                            .controlSize(.small)
-                            .frame(width: 40)
-                    }
-                    Button {
-                        onCancel()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 16))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Cancel download")
-                }
+            case .downloading, .paused:
+                ModelDownloadTransferControls(
+                    state: state,
+                    onResume: onDownload,
+                    onPause: onPause,
+                    onCancel: onCancel
+                )
 
             case .downloaded:
                 Image(systemName: "checkmark.circle.fill")
@@ -304,5 +290,21 @@ private struct HFFileRow: View {
                 .controlSize(.small)
             }
         }
+    }
+
+    private var fileDetailText: String {
+        switch state {
+        case .downloading, .paused, .failed:
+            return "\(file.sizeLabel) • \(state.statusText)"
+        case .idle, .downloaded:
+            return file.sizeLabel
+        }
+    }
+
+    private var fileDetailColor: Color {
+        if case .failed = state {
+            return .red
+        }
+        return .secondary
     }
 }

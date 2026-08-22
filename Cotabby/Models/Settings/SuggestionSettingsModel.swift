@@ -86,6 +86,8 @@ final class SuggestionSettingsModel: ObservableObject {
     /// default user never pays any extra storage or write cost — recording only kicks in once the
     /// user opts in from Settings.
     @Published private(set) var isPerformanceTrackingEnabled: Bool
+    /// UI-facing preference for pausing suggestions in Low Power Mode.
+    @Published private(set) var isLowPowerModeAutoDisableEnabled: Bool
     /// Whether Cotabby's status item is inserted into the menu bar. The process and suggestion
     /// pipeline remain active when hidden; launching the app again opens Settings as the recovery path.
     @Published private(set) var isMenuBarIconVisible: Bool
@@ -223,6 +225,7 @@ final class SuggestionSettingsModel: ObservableObject {
         enabledSpellingDictionaryCodes = data.enabledSpellingDictionaryCodes
         automaticallyFixTypos = data.automaticallyFixTypos
         isPerformanceTrackingEnabled = data.isPerformanceTrackingEnabled
+        isLowPowerModeAutoDisableEnabled = data.isLowPowerModeAutoDisableEnabled
         isMenuBarIconVisible = data.isMenuBarIconVisible
         isMenuBarWordCountVisible = data.isMenuBarWordCountVisible
         mirrorPreference = data.mirrorPreference
@@ -299,6 +302,7 @@ final class SuggestionSettingsModel: ObservableObject {
         enabledSpellingDictionaryCodes = data.enabledSpellingDictionaryCodes
         automaticallyFixTypos = data.automaticallyFixTypos
         isPerformanceTrackingEnabled = data.isPerformanceTrackingEnabled
+        isLowPowerModeAutoDisableEnabled = data.isLowPowerModeAutoDisableEnabled
         isMenuBarIconVisible = data.isMenuBarIconVisible
         isMenuBarWordCountVisible = data.isMenuBarWordCountVisible
         mirrorPreference = data.mirrorPreference
@@ -357,7 +361,8 @@ final class SuggestionSettingsModel: ObservableObject {
                 pauseState: pauseState,
                 disabledAppRules: disabledAppRules,
                 suggestInIntegratedTerminals: suggestInIntegratedTerminals,
-                isPerformanceTrackingEnabled: isPerformanceTrackingEnabled
+                isPerformanceTrackingEnabled: isPerformanceTrackingEnabled,
+                isLowPowerModeAutoDisableEnabled: isLowPowerModeAutoDisableEnabled
             ),
             engine: SuggestionEngineSettings(
                 selectedEngine: selectedEngine,
@@ -446,6 +451,7 @@ final class SuggestionSettingsModel: ObservableObject {
             isTemporarilyPaused: settings.general.pauseState?.isActive() == true,
             disabledAppBundleIdentifiers: Set(settings.general.disabledAppRules.map(\.bundleIdentifier)),
             suggestInIntegratedTerminals: settings.general.suggestInIntegratedTerminals,
+            isLowPowerModeAutoDisableEnabled: settings.general.isLowPowerModeAutoDisableEnabled,
             selectedEngine: settings.engine.selectedEngine,
             selectedWordCountPreset: settings.completion.selectedWordCountPreset,
             isUsingCustomWordCountRange: settings.completion.isUsingCustomWordCountRange,
@@ -759,6 +765,15 @@ final class SuggestionSettingsModel: ObservableObject {
 
         isPerformanceTrackingEnabled = enabled
         store.savePerformanceTrackingEnabled(enabled)
+    }
+
+    func setLowPowerModeAutoDisableEnabled(_ enabled: Bool) {
+        guard isLowPowerModeAutoDisableEnabled != enabled else {
+            return
+        }
+
+        isLowPowerModeAutoDisableEnabled = enabled
+        store.saveLowPowerModeAutoDisableEnabled(enabled)
     }
 
     func setMenuBarIconVisible(_ visible: Bool) {
@@ -1536,13 +1551,16 @@ extension SuggestionSettingsModel: SuggestionSettingsProviding {
             $customWordCountLowWords,
             $customWordCountHighWords
         )
-        // `extendedContext` shares its outer slot with `suggestInIntegratedTerminals` and
-        // `isSurfaceContextEnabled` via one grouped `CombineLatest3` so new toggles cost no extra
-        // top-level slot (the outer is at the cap).
+        // The outer `CombineLatest4` is full, so these settings share its grouped publisher slot.
         return Publishers.CombineLatest4(
             primary,
             $acceptanceGranularity,
-            Publishers.CombineLatest3($extendedContext, $suggestInIntegratedTerminals, $isSurfaceContextEnabled),
+            Publishers.CombineLatest4(
+                $extendedContext,
+                $suggestInIntegratedTerminals,
+                $isSurfaceContextEnabled,
+                $isLowPowerModeAutoDisableEnabled
+            ),
             customRange
         )
             .map { primaryTuple, granularity, extendedContextTuple, customRangeTuple in
@@ -1555,12 +1573,14 @@ extension SuggestionSettingsModel: SuggestionSettingsProviding {
                 let (debounce, focusPoll, multiLine, acceptToggles) = timing
                 let (autoAcceptPunctuation, addSpaceAfterAccept, streamWhileGenerating) = acceptToggles
                 let (isCustomActive, customLow, customHigh) = customRangeTuple
-                let (extendedContext, suggestInIntegratedTerminals, surfaceContextEnabled) = extendedContextTuple
+                let (extendedContext, suggestInIntegratedTerminals, surfaceContextEnabled, lowPowerModeAutoDisableEnabled) =
+                    extendedContextTuple
                 return SuggestionSettingsSnapshot(
                     isGloballyEnabled: globallyEnabled,
                     isTemporarilyPaused: pauseState?.isActive() == true,
                     disabledAppBundleIdentifiers: Set(disabledAppRules.map(\.bundleIdentifier)),
                     suggestInIntegratedTerminals: suggestInIntegratedTerminals,
+                    isLowPowerModeAutoDisableEnabled: lowPowerModeAutoDisableEnabled,
                     selectedEngine: engine,
                     selectedWordCountPreset: wordCountPreset,
                     isUsingCustomWordCountRange: isCustomActive,

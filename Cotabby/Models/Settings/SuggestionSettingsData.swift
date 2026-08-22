@@ -11,6 +11,8 @@ struct SuggestionGeneralSettings: Equatable {
     var disabledAppRules: [DisabledApplicationRule]
     var suggestInIntegratedTerminals: Bool
     var isPerformanceTrackingEnabled: Bool
+    /// Whether suggestions pause while Low Power Mode is active.
+    var isLowPowerModeAutoDisableEnabled: Bool
 }
 
 /// Backend selection, endpoint configuration, and power-source routing.
@@ -140,6 +142,11 @@ extension SuggestionSettingsData {
     var isPerformanceTrackingEnabled: Bool {
         get { general.isPerformanceTrackingEnabled }
         set { general.isPerformanceTrackingEnabled = newValue }
+    }
+
+    var isLowPowerModeAutoDisableEnabled: Bool {
+        get { general.isLowPowerModeAutoDisableEnabled }
+        set { general.isLowPowerModeAutoDisableEnabled = newValue }
     }
 
     var selectedEngine: SuggestionEngineKind {

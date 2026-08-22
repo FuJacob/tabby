@@ -65,6 +65,33 @@ final class HuggingFaceModelsTests: XCTestCase {
         XCTAssertTrue(url.absoluteString.hasSuffix("?download=true"))
     }
 
+    @MainActor
+    func test_searchService_preservesExactFileSizeForDownloadValidation() throws {
+        let file = makeFile(path: "weights/model.gguf", size: 987_654_321)
+        let model = try XCTUnwrap(
+            HuggingFaceSearchService.makeDownloadableModel(from: file, repoId: "org/repo")
+        )
+
+        XCTAssertEqual(model.filename, "model.gguf")
+        XCTAssertEqual(model.expectedSizeBytes, file.size)
+    }
+
+    @MainActor
+    func test_searchService_usesTheFullSourceURLAsDownloadIdentity() throws {
+        let file = makeFile(path: "weights/shared-name.gguf")
+        let first = try XCTUnwrap(
+            HuggingFaceSearchService.makeDownloadableModel(from: file, repoId: "org/first")
+        )
+        let second = try XCTUnwrap(
+            HuggingFaceSearchService.makeDownloadableModel(from: file, repoId: "org/second")
+        )
+
+        XCTAssertEqual(first.filename, second.filename)
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertTrue(first.id.contains("org/first/resolve/main/weights/shared-name.gguf"))
+        XCTAssertTrue(second.id.contains("org/second/resolve/main/weights/shared-name.gguf"))
+    }
+
     private func makeFile(path: String = "model.gguf", size: Int64 = 1_073_741_824) -> HFRepoFile {
         HFRepoFile(path: path, size: size)
     }

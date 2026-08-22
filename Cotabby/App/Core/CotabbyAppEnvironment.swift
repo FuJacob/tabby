@@ -24,6 +24,8 @@ final class CotabbyAppEnvironment {
     let openAICompatibleConnectionModel: OpenAICompatibleConnectionModel
     let foundationModelAvailabilityService: FoundationModelAvailabilityService
     let powerSourceMonitor: PowerSourceMonitor
+    /// Process-lifetime Low Power Mode observer shared with suggestion orchestration.
+    let lowPowerModeMonitor: LowPowerModeMonitor
     /// Detects when a composing input method (Japanese kana, Chinese pinyin, Korean hangul, ...) is
     /// active so `SuggestionInserter` commits accepted text through an IME-safe path instead of a
     /// synthetic keystroke the input method would swallow. See `KeyboardInputSourceMonitor`.
@@ -65,6 +67,7 @@ final class CotabbyAppEnvironment {
         )
         let foundationModelAvailabilityService = FoundationModelAvailabilityService()
         let powerSourceMonitor = PowerSourceMonitor()
+        let lowPowerModeMonitor = LowPowerModeMonitor()
         let keyboardInputSourceMonitor = KeyboardInputSourceMonitor()
         let suppressionController = InputSuppressionController()
         let inputMonitor = InputMonitor(
@@ -255,6 +258,7 @@ final class CotabbyAppEnvironment {
         )
         let suggestionCoordinator = SuggestionCoordinator(
             permissionManager: permissionManager,
+            lowPowerModeProvider: lowPowerModeMonitor,
             focusModel: focusModel,
             inputMonitor: inputMonitor,
             overlayController: overlayController,
@@ -328,6 +332,7 @@ final class CotabbyAppEnvironment {
         self.openAICompatibleConnectionModel = openAICompatibleConnectionModel
         self.foundationModelAvailabilityService = foundationModelAvailabilityService
         self.powerSourceMonitor = powerSourceMonitor
+        self.lowPowerModeMonitor = lowPowerModeMonitor
         self.keyboardInputSourceMonitor = keyboardInputSourceMonitor
         self.clipboardContextProvider = clipboardContextProvider
         self.suggestionCoordinator = suggestionCoordinator

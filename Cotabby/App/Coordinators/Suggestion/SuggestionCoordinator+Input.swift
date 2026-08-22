@@ -23,6 +23,28 @@ extension SuggestionCoordinator {
         if SuggestionAvailabilityEvaluator.shouldSchedulePrediction(
             globallyEnabled: settingsSnapshot.isGloballyEnabled,
             temporarilyPaused: settingsSnapshot.isTemporarilyPaused,
+            isLowPowerModeActive: lowPowerModeProvider.isLowPowerModeEnabled,
+            isLowPowerModeAutoDisableEnabled: settingsSnapshot.isLowPowerModeAutoDisableEnabled,
+            disabledAppBundleIdentifiers: settingsSnapshot.disabledAppBundleIdentifiers,
+            disabledDomains: PerDomainDisableSettings.disabledDomains(),
+            suggestInIntegratedTerminals: settingsSnapshot.suggestInIntegratedTerminals,
+            inputMonitoringGranted: permissionManager.inputMonitoringGranted,
+            focusSnapshot: focusModel.snapshot
+        ) {
+            handleSupportedSnapshot(focusModel.snapshot)
+        }
+    }
+
+    /// Re-evaluates the pipeline immediately instead of waiting for another input or focus event.
+    func handleLowPowerModeChange() {
+        CotabbyLogger.suggestion.debug("Low Power Mode state changed, reconciling")
+        reconcileWithCurrentEnvironment()
+
+        if SuggestionAvailabilityEvaluator.shouldSchedulePrediction(
+            globallyEnabled: settingsSnapshot.isGloballyEnabled,
+            temporarilyPaused: settingsSnapshot.isTemporarilyPaused,
+            isLowPowerModeActive: lowPowerModeProvider.isLowPowerModeEnabled,
+            isLowPowerModeAutoDisableEnabled: settingsSnapshot.isLowPowerModeAutoDisableEnabled,
             disabledAppBundleIdentifiers: settingsSnapshot.disabledAppBundleIdentifiers,
             disabledDomains: PerDomainDisableSettings.disabledDomains(),
             suggestInIntegratedTerminals: settingsSnapshot.suggestInIntegratedTerminals,
@@ -60,6 +82,8 @@ extension SuggestionCoordinator {
            SuggestionAvailabilityEvaluator.shouldCaptureVisualContext(
                globallyEnabled: settingsSnapshot.isGloballyEnabled,
                temporarilyPaused: settingsSnapshot.isTemporarilyPaused,
+               isLowPowerModeActive: lowPowerModeProvider.isLowPowerModeEnabled,
+               isLowPowerModeAutoDisableEnabled: settingsSnapshot.isLowPowerModeAutoDisableEnabled,
                disabledAppBundleIdentifiers: settingsSnapshot.disabledAppBundleIdentifiers,
                disabledDomains: PerDomainDisableSettings.disabledDomains(),
                suggestInIntegratedTerminals: settingsSnapshot.suggestInIntegratedTerminals,
@@ -90,6 +114,8 @@ extension SuggestionCoordinator {
         if SuggestionAvailabilityEvaluator.shouldCaptureVisualContext(
             globallyEnabled: settingsSnapshot.isGloballyEnabled,
             temporarilyPaused: settingsSnapshot.isTemporarilyPaused,
+            isLowPowerModeActive: lowPowerModeProvider.isLowPowerModeEnabled,
+            isLowPowerModeAutoDisableEnabled: settingsSnapshot.isLowPowerModeAutoDisableEnabled,
             disabledAppBundleIdentifiers: settingsSnapshot.disabledAppBundleIdentifiers,
             disabledDomains: PerDomainDisableSettings.disabledDomains(),
             suggestInIntegratedTerminals: settingsSnapshot.suggestInIntegratedTerminals,
