@@ -110,6 +110,8 @@ struct SuggestionSettingsSnapshot: Equatable, Sendable {
     /// xterm.js surfaces). Power users can opt back in. Travels in the snapshot so the availability
     /// gate sees the live value alongside the other "where Cotabby runs" rules.
     let suggestInIntegratedTerminals: Bool
+    /// Whether the availability gate pauses suggestions during Low Power Mode.
+    let isLowPowerModeAutoDisableEnabled: Bool
     let selectedEngine: SuggestionEngineKind
     let selectedWordCountPreset: SuggestionWordCountPreset
     /// When true, the generation pipeline uses `customWordCountRange` for the length budget and

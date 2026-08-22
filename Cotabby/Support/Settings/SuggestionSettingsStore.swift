@@ -113,6 +113,7 @@ struct SuggestionSettingsStore {
     private static let spellingDictionaryCodesDefaultsKey = "cotabbyEnabledSpellingDictionaryCodes"
     private static let automaticallyFixTyposDefaultsKey = "cotabbyAutomaticallyFixTypos"
     private static let performanceTrackingEnabledDefaultsKey = "cotabbyPerformanceTrackingEnabled"
+    private static let lowPowerModeAutoDisableDefaultsKey = "cotabbyLowPowerModeAutoDisableEnabled"
     /// Shared with `CotabbyApp` because SwiftUI's scene-level `@AppStorage` is what invalidates the
     /// `MenuBarExtra` insertion binding when the settings model writes this preference.
     static let menuBarIconVisibleDefaultsKey = "cotabbyMenuBarIconVisible"
@@ -190,6 +191,7 @@ struct SuggestionSettingsStore {
         spellingDictionaryCodesDefaultsKey,
         automaticallyFixTyposDefaultsKey,
         performanceTrackingEnabledDefaultsKey,
+        lowPowerModeAutoDisableDefaultsKey,
         menuBarWordCountVisibleDefaultsKey,
         mirrorPreferenceDefaultsKey,
         userNameDefaultsKey,
@@ -335,6 +337,9 @@ struct SuggestionSettingsStore {
         // in from the Performance pane.
         let resolvedPerformanceTrackingEnabled =
             userDefaults.object(forKey: Self.performanceTrackingEnabledDefaultsKey) as? Bool ?? false
+        // Existing installs lack this key; defaulting to true keeps the feature opt-out.
+        let resolvedLowPowerModeAutoDisableEnabled =
+            userDefaults.object(forKey: Self.lowPowerModeAutoDisableDefaultsKey) as? Bool ?? true
         // Existing installs keep the status item unless the user explicitly hides it. Hiding the
         // item must never terminate the accessory app because autocomplete continues in the background.
         let resolvedMenuBarIconVisible =
@@ -504,7 +509,8 @@ struct SuggestionSettingsStore {
                 pauseState: resolvedPauseState,
                 disabledAppRules: resolvedDisabledAppRules,
                 suggestInIntegratedTerminals: resolvedSuggestInIntegratedTerminals,
-                isPerformanceTrackingEnabled: resolvedPerformanceTrackingEnabled
+                isPerformanceTrackingEnabled: resolvedPerformanceTrackingEnabled,
+                isLowPowerModeAutoDisableEnabled: resolvedLowPowerModeAutoDisableEnabled
             ),
             engine: SuggestionEngineSettings(
                 selectedEngine: resolvedEngine,
@@ -610,6 +616,7 @@ struct SuggestionSettingsStore {
         saveEnabledSpellingDictionaryCodes(data.enabledSpellingDictionaryCodes)
         saveAutomaticallyFixTypos(data.automaticallyFixTypos)
         savePerformanceTrackingEnabled(data.isPerformanceTrackingEnabled)
+        saveLowPowerModeAutoDisableEnabled(data.isLowPowerModeAutoDisableEnabled)
         saveMenuBarIconVisible(data.isMenuBarIconVisible)
         saveMenuBarWordCountVisible(data.isMenuBarWordCountVisible)
         saveMirrorPreference(data.mirrorPreference)
@@ -824,6 +831,10 @@ struct SuggestionSettingsStore {
 
     func savePerformanceTrackingEnabled(_ enabled: Bool) {
         userDefaults.set(enabled, forKey: Self.performanceTrackingEnabledDefaultsKey)
+    }
+
+    func saveLowPowerModeAutoDisableEnabled(_ enabled: Bool) {
+        userDefaults.set(enabled, forKey: Self.lowPowerModeAutoDisableDefaultsKey)
     }
 
     func saveMenuBarIconVisible(_ visible: Bool) {

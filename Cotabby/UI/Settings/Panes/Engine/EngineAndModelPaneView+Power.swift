@@ -14,6 +14,20 @@ extension EngineAndModelPaneView {
         Section("Power") {
             Toggle(
                 isOn: Binding(
+                    get: { suggestionSettings.isLowPowerModeAutoDisableEnabled },
+                    set: { suggestionSettings.setLowPowerModeAutoDisableEnabled($0) }
+                )
+            ) {
+                SettingsRowLabel(
+                    title: "Pause in Low Power Mode",
+                    description: "Pause suggestions while Low Power Mode is on to reduce battery use.",
+                    systemImage: "bolt.slash.circle"
+                )
+            }
+            .settingsItem(.lowPowerModeAutoDisable)
+
+            Toggle(
+                isOn: Binding(
                     get: { suggestionSettings.isPowerBasedModelSwitchingEnabled },
                     set: { suggestionSettings.setPowerBasedModelSwitchingEnabled($0) }
                 )

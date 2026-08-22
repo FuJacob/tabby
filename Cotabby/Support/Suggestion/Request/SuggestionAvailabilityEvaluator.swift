@@ -10,6 +10,8 @@ enum SuggestionAvailabilityEvaluator {
     static func disabledReason(
         globallyEnabled: Bool = true,
         temporarilyPaused: Bool = false,
+        isLowPowerModeActive: Bool = false,
+        isLowPowerModeAutoDisableEnabled: Bool = false,
         disabledAppBundleIdentifiers: Set<String> = [],
         disabledDomains: Set<String> = [],
         suggestInIntegratedTerminals: Bool = false,
@@ -25,31 +27,17 @@ enum SuggestionAvailabilityEvaluator {
             return "Cotabby is temporarily paused."
         }
 
-        if let bundleIdentifier = focusSnapshot.bundleIdentifier,
-           disabledAppBundleIdentifiers.contains(bundleIdentifier) {
-            return "Cotabby is disabled in \(focusSnapshot.applicationName)."
+        if isLowPowerModeActive && isLowPowerModeAutoDisableEnabled {
+            return "Cotabby is paused because Low Power Mode is on."
         }
 
-        // Per-site disable: when focus capture resolved a page URL, a host on the user's disabled list
-        // (exact or parent domain) suppresses autocomplete the same way a disabled app does. The URL is
-        // nil unless the feature is enabled and a browser exposed it, and the list is empty by default,
-        // so non-browser focus is unaffected.
-        if let urlString = focusSnapshot.context?.focusedURLString,
-           let host = BrowserDomain.host(fromURLString: urlString),
-           BrowserDomain.isHostDisabled(host, disabledDomains: disabledDomains) {
-            return "Cotabby is disabled on \(host)."
-        }
-
-        if TerminalAppDetector.isTerminal(bundleIdentifier: focusSnapshot.bundleIdentifier) {
-            return "Cotabby is not available in terminal apps."
-        }
-
-        // Integrated terminals (VS Code / Cursor xterm.js) share their app's bundle id with the
-        // editor and chat, so they slip past the blocklist above. Suppress them here unless the user
-        // has opted back in, keeping ghost text out of shell prompts and command output while the
-        // editor and Copilot chat in the same window keep suggesting.
-        if !suggestInIntegratedTerminals, focusSnapshot.context?.isIntegratedTerminal == true {
-            return "Cotabby is not available in the integrated terminal."
+        if let reason = locationDisabledReason(
+            disabledAppBundleIdentifiers: disabledAppBundleIdentifiers,
+            disabledDomains: disabledDomains,
+            suggestInIntegratedTerminals: suggestInIntegratedTerminals,
+            focusSnapshot: focusSnapshot
+        ) {
+            return reason
         }
 
         guard inputMonitoringGranted else {
@@ -71,6 +59,8 @@ enum SuggestionAvailabilityEvaluator {
     static func shouldSchedulePrediction(
         globallyEnabled: Bool = true,
         temporarilyPaused: Bool = false,
+        isLowPowerModeActive: Bool = false,
+        isLowPowerModeAutoDisableEnabled: Bool = false,
         disabledAppBundleIdentifiers: Set<String> = [],
         disabledDomains: Set<String> = [],
         suggestInIntegratedTerminals: Bool = false,
@@ -80,6 +70,8 @@ enum SuggestionAvailabilityEvaluator {
         disabledReason(
             globallyEnabled: globallyEnabled,
             temporarilyPaused: temporarilyPaused,
+            isLowPowerModeActive: isLowPowerModeActive,
+            isLowPowerModeAutoDisableEnabled: isLowPowerModeAutoDisableEnabled,
             disabledAppBundleIdentifiers: disabledAppBundleIdentifiers,
             disabledDomains: disabledDomains,
             suggestInIntegratedTerminals: suggestInIntegratedTerminals,
@@ -103,6 +95,8 @@ enum SuggestionAvailabilityEvaluator {
     static func shouldCaptureVisualContext(
         globallyEnabled: Bool = true,
         temporarilyPaused: Bool = false,
+        isLowPowerModeActive: Bool = false,
+        isLowPowerModeAutoDisableEnabled: Bool = false,
         disabledAppBundleIdentifiers: Set<String> = [],
         disabledDomains: Set<String> = [],
         suggestInIntegratedTerminals: Bool = false,
@@ -122,6 +116,8 @@ enum SuggestionAvailabilityEvaluator {
         return disabledReason(
             globallyEnabled: globallyEnabled,
             temporarilyPaused: temporarilyPaused,
+            isLowPowerModeActive: isLowPowerModeActive,
+            isLowPowerModeAutoDisableEnabled: isLowPowerModeAutoDisableEnabled,
             disabledAppBundleIdentifiers: disabledAppBundleIdentifiers,
             disabledDomains: disabledDomains,
             suggestInIntegratedTerminals: suggestInIntegratedTerminals,
@@ -143,5 +139,36 @@ enum SuggestionAvailabilityEvaluator {
         }
 
         return SuggestionRequestFactory.shouldGenerateSuggestion(for: context.precedingText)
+    }
+
+    /// Returns the first app, domain, or terminal rule that disables the focused field.
+    private static func locationDisabledReason(
+        disabledAppBundleIdentifiers: Set<String>,
+        disabledDomains: Set<String>,
+        suggestInIntegratedTerminals: Bool,
+        focusSnapshot: FocusSnapshot
+    ) -> String? {
+        if let bundleIdentifier = focusSnapshot.bundleIdentifier,
+           disabledAppBundleIdentifiers.contains(bundleIdentifier) {
+            return "Cotabby is disabled in \(focusSnapshot.applicationName)."
+        }
+
+        // Only focus snapshots with a resolved browser URL can match disabled domains.
+        if let urlString = focusSnapshot.context?.focusedURLString,
+           let host = BrowserDomain.host(fromURLString: urlString),
+           BrowserDomain.isHostDisabled(host, disabledDomains: disabledDomains) {
+            return "Cotabby is disabled on \(host)."
+        }
+
+        if TerminalAppDetector.isTerminal(bundleIdentifier: focusSnapshot.bundleIdentifier) {
+            return "Cotabby is not available in terminal apps."
+        }
+
+        // Integrated terminals share the editor's bundle ID, so check their AX-derived flag.
+        if !suggestInIntegratedTerminals, focusSnapshot.context?.isIntegratedTerminal == true {
+            return "Cotabby is not available in the integrated terminal."
+        }
+
+        return nil
     }
 }

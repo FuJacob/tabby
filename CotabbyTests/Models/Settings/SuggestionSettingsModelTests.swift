@@ -55,6 +55,7 @@ final class SuggestionSettingsModelTests: XCTestCase {
             model.setOfferTypoCorrections(true)
             model.setAutomaticallyFixTypos(true)
             model.setPerformanceTrackingEnabled(true)
+            model.setLowPowerModeAutoDisableEnabled(false)
             model.setMenuBarIconVisible(false)
             model.setMenuBarWordCountVisible(false)
             model.setMirrorPreference(.alwaysMirror)
@@ -101,6 +102,7 @@ final class SuggestionSettingsModelTests: XCTestCase {
         XCTAssertTrue(reloaded.offerTypoCorrections)
         XCTAssertTrue(reloaded.automaticallyFixTypos)
         XCTAssertTrue(reloaded.isPerformanceTrackingEnabled)
+        XCTAssertFalse(reloaded.isLowPowerModeAutoDisableEnabled)
         XCTAssertFalse(reloaded.isMenuBarIconVisible)
         XCTAssertFalse(reloaded.isMenuBarWordCountVisible)
         XCTAssertEqual(reloaded.mirrorPreference, .alwaysMirror)
@@ -167,6 +169,7 @@ final class SuggestionSettingsModelTests: XCTestCase {
         model.setOfferTypoCorrections(false)
         model.setAutomaticallyFixTypos(true)
         model.setPerformanceTrackingEnabled(true)
+        model.setLowPowerModeAutoDisableEnabled(false)
         model.setMenuBarWordCountVisible(false)
         model.setMirrorPreference(.alwaysMirror)
         model.setMultiLineEnabled(true)
@@ -220,6 +223,7 @@ final class SuggestionSettingsModelTests: XCTestCase {
         XCTAssertEqual(model.offerTypoCorrections, pristine.offerTypoCorrections)
         XCTAssertEqual(model.automaticallyFixTypos, pristine.automaticallyFixTypos)
         XCTAssertEqual(model.isPerformanceTrackingEnabled, pristine.isPerformanceTrackingEnabled)
+        XCTAssertEqual(model.isLowPowerModeAutoDisableEnabled, pristine.isLowPowerModeAutoDisableEnabled)
         XCTAssertEqual(model.isMenuBarWordCountVisible, pristine.isMenuBarWordCountVisible)
         XCTAssertEqual(model.mirrorPreference, pristine.mirrorPreference)
         XCTAssertEqual(model.isMultiLineEnabled, pristine.isMultiLineEnabled)
@@ -626,6 +630,11 @@ final class SuggestionSettingsModelTests: XCTestCase {
         model.setCustomWordCountRange(low: 2, high: 200)
         XCTAssertEqual(snapshots.last?.customWordCountRange, SuggestionWordRange(lowWords: 2, highWords: 50))
         XCTAssertEqual(snapshots.last?.isUsingCustomWordCountRange, true)
+
+        // The fourth grouped publisher must map to the matching snapshot field.
+        XCTAssertEqual(snapshots.last?.isLowPowerModeAutoDisableEnabled, true)
+        model.setLowPowerModeAutoDisableEnabled(false)
+        XCTAssertEqual(snapshots.last?.isLowPowerModeAutoDisableEnabled, false)
     }
 
     func test_snapshot_reflectsDisabledBundlesAndExtendedContext() {
