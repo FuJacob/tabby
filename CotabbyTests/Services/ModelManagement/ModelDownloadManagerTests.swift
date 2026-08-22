@@ -56,9 +56,90 @@ final class ModelDownloadManagerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: testFile.path))
     }
 
+    func test_sameFilenameSourcesKeepIndependentStateAndPreserveFailureOnRefresh() async throws {
+        let manager = makeManager()
+        let first = try makeModel(source: "https://example.com/first/shared.gguf")
+        let second = try makeModel(source: "https://example.com/second/shared.gguf")
+
+        manager.download(first)
+        manager.download(second)
+
+        XCTAssertTrue(manager.state(for: first).isDownloading)
+        guard case .failed(let message) = manager.state(for: second) else {
+            return XCTFail("Expected the second source to be blocked by the flat destination policy")
+        }
+        XCTAssertTrue(message.contains("Cancel that transfer"))
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertTrue(manager.modelStates.keys.contains(first.id))
+        XCTAssertTrue(manager.modelStates.keys.contains(second.id))
+
+        manager.cancel(first)
+        try await waitForTransferToSettle(first, in: manager)
+        manager.refreshModelStates()
+
+        guard case .failed(let refreshedMessage) = manager.state(for: second) else {
+            return XCTFail("Expected refresh to preserve the dynamic model's failure message")
+        }
+        XCTAssertEqual(refreshedMessage, message)
+    }
+
+    func test_refreshPreservesPausedDynamicSourceAndInactiveCancelReturnsToIdle() async throws {
+        let manager = makeManager()
+        let model = try makeModel(source: "https://example.com/paused/shared.gguf")
+
+        manager.download(model)
+        manager.pause(model)
+        try await waitForTransferToSettle(model, in: manager)
+
+        guard case .paused = manager.state(for: model) else {
+            return XCTFail("Expected pause during setup to publish a paused state")
+        }
+        manager.refreshModelStates()
+        guard case .paused = manager.state(for: model) else {
+            return XCTFail("Expected refresh to preserve the paused dynamic source")
+        }
+
+        manager.cancel(model)
+        XCTAssertEqual(manager.state(for: model), .idle)
+    }
+
+    func test_inactiveCancelRestoresDownloadedWhenDestinationExists() throws {
+        let installedURL = tempDir.appendingPathComponent("shared.gguf")
+        try "installed".write(to: installedURL, atomically: true, encoding: .utf8)
+        let manager = makeManager()
+        let model = try makeModel(source: "https://example.com/installed/shared.gguf")
+
+        manager.cancel(model)
+
+        XCTAssertEqual(manager.state(for: model), .downloaded)
+    }
+
     private func makeManager() -> ModelDownloadManager {
         let manager = ModelDownloadManager(runtimeDirectoryURL: tempDir)
         Self.retainedManagers.append(manager)
         return manager
+    }
+
+    private func makeModel(source: String) throws -> DownloadableRuntimeModel {
+        let url = try XCTUnwrap(URL(string: source))
+        return DownloadableRuntimeModel(
+            filename: "shared.gguf",
+            displayName: "Shared",
+            downloadURL: url,
+            approximateSizeInGigabytes: 1
+        )
+    }
+
+    private func waitForTransferToSettle(
+        _ model: DownloadableRuntimeModel,
+        in manager: ModelDownloadManager
+    ) async throws {
+        for _ in 0..<200 {
+            if !manager.state(for: model).isDownloading {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTFail("The model transfer did not settle after cancellation")
     }
 }

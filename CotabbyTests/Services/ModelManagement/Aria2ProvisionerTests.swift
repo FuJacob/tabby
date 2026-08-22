@@ -77,6 +77,45 @@ final class Aria2ProvisionerTests: XCTestCase {
         }
     }
 
+    func test_provisioner_keepsSharedInstallAliveWhenOneCallerCancels() async throws {
+        let stub = StubExecutableFileManager()
+        let brewURL = URL(fileURLWithPath: "/mock/bin/brew")
+        let installerStarted = expectation(description: "installer started")
+        let gate = AsyncTestGate()
+        let installCount = LockedCounter()
+        let provisioner = Aria2Provisioner(
+            fileManager: stub,
+            brewLocator: { brewURL },
+            installer: { _ in
+                installCount.increment()
+                installerStarted.fulfill()
+                await gate.wait()
+                try Task.checkCancellation()
+                stub.executablePaths = ["/opt/homebrew/bin/aria2c"]
+                return true
+            }
+        )
+
+        let cancelledCaller = Task { try await provisioner.provisionIfNeeded() }
+        await fulfillment(of: [installerStarted], timeout: 1)
+        let survivingCaller = Task { try await provisioner.provisionIfNeeded() }
+        try await Task.sleep(for: .milliseconds(20))
+
+        cancelledCaller.cancel()
+        do {
+            _ = try await cancelledCaller.value
+            XCTFail("Expected the first caller to observe cancellation")
+        } catch is CancellationError {
+            // The shared installer must continue for the surviving caller.
+        }
+
+        await gate.open()
+        let resolvedURL = try await survivingCaller.value
+
+        XCTAssertEqual(resolvedURL.path, "/opt/homebrew/bin/aria2c")
+        XCTAssertEqual(installCount.value, 1)
+    }
+
     func test_homebrewInstallReturnsProcessStatus() async throws {
         let successfulExecutable = try makeExecutableScript("exit 0")
         let failingExecutable = try makeExecutableScript("exit 9")
@@ -150,6 +189,44 @@ final class Aria2ProvisionerTests: XCTestCase {
     private func removeFixtures(_ urls: URL...) {
         for url in urls {
             try? FileManager.default.removeItem(at: url)
+        }
+    }
+}
+
+private actor AsyncTestGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        isOpen = true
+        let pendingWaiters = waiters
+        waiters.removeAll()
+        for waiter in pendingWaiters {
+            waiter.resume()
+        }
+    }
+}
+
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.withLock { count }
+    }
+
+    func increment() {
+        lock.withLock {
+            count += 1
         }
     }
 }

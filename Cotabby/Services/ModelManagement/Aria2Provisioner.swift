@@ -31,7 +31,12 @@ nonisolated final class Aria2Provisioner: @unchecked Sendable {
     private let brewLocator: BrewLocator
     private let installer: Installer
     private let lock = NSLock()
-    private var activeTask: Task<URL, Error>?
+    private struct ActiveProvision {
+        let id: UUID
+        let task: Task<URL, Error>
+        var waiterCount: Int
+    }
+    private var activeProvision: ActiveProvision?
 
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
@@ -55,14 +60,17 @@ nonisolated final class Aria2Provisioner: @unchecked Sendable {
             return existingURL
         }
 
-        let selection: (task: Task<URL, Error>, isOwner: Bool) = lock.withLock {
-            if let activeTask {
-                return (activeTask, false)
+        let selection: (id: UUID, task: Task<URL, Error>) = lock.withLock {
+            if var activeProvision {
+                activeProvision.waiterCount += 1
+                self.activeProvision = activeProvision
+                return (activeProvision.id, activeProvision.task)
             }
 
             let fileManager = self.fileManager
             let brewLocator = self.brewLocator
             let installer = self.installer
+            let id = UUID()
             let task = Task<URL, Error> {
                 try await Self.performProvision(
                     fileManager: fileManager,
@@ -70,22 +78,32 @@ nonisolated final class Aria2Provisioner: @unchecked Sendable {
                     installer: installer
                 )
             }
-            activeTask = task
-            return (task, true)
+            activeProvision = ActiveProvision(id: id, task: task, waiterCount: 1)
+            return (id, task)
         }
 
-        defer {
-            if selection.isOwner {
-                lock.withLock {
-                    activeTask = nil
-                }
+        let waiter = ProvisioningWaiter(task: selection.task) { [weak self] in
+            self?.releaseWaiter(for: selection.id)
+        }
+        return try await waiter.value()
+    }
+
+    /// Releases one caller's claim on the shared install. The subprocess is cancelled only after
+    /// the last caller withdraws, so cancelling one model download cannot disrupt another.
+    private func releaseWaiter(for id: UUID) {
+        let taskToCancel: Task<URL, Error>? = lock.withLock {
+            guard var activeProvision, activeProvision.id == id else {
+                return nil
             }
+            activeProvision.waiterCount -= 1
+            if activeProvision.waiterCount == 0 {
+                self.activeProvision = nil
+                return activeProvision.task
+            }
+            self.activeProvision = activeProvision
+            return nil
         }
-        return try await withTaskCancellationHandler {
-            try await selection.task.value
-        } onCancel: {
-            selection.task.cancel()
-        }
+        taskToCancel?.cancel()
     }
 
     private static func performProvision(
@@ -159,6 +177,86 @@ nonisolated final class Aria2Provisioner: @unchecked Sendable {
         } onCancel: {
             execution.cancel()
         }
+    }
+}
+
+/// Gives each caller an independently cancellable wait on one shared provisioning task.
+/// Its small lock-protected state machine closes the race where cancellation arrives before the
+/// checked continuation is installed, while `didFinish` releases the caller's shared-task lease once.
+nonisolated private final class ProvisioningWaiter: @unchecked Sendable {
+    private typealias Continuation = CheckedContinuation<URL, Error>
+
+    private enum State {
+        case waiting
+        case suspended(Continuation)
+        case finished(Result<URL, Error>)
+    }
+
+    private let task: Task<URL, Error>
+    private let didFinish: @Sendable () -> Void
+    private let lock = NSLock()
+    private var state = State.waiting
+
+    init(
+        task: Task<URL, Error>,
+        didFinish: @escaping @Sendable () -> Void
+    ) {
+        self.task = task
+        self.didFinish = didFinish
+    }
+
+    func value() async throws -> URL {
+        let observer = Task { [weak self, task] in
+            let result: Result<URL, Error>
+            do {
+                result = .success(try await task.value)
+            } catch {
+                result = .failure(error)
+            }
+            self?.finish(with: result)
+        }
+        defer { observer.cancel() }
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let completedResult: Result<URL, Error>? = lock.withLock {
+                    switch state {
+                    case .waiting:
+                        state = .suspended(continuation)
+                        return nil
+                    case .finished(let result):
+                        return result
+                    case .suspended:
+                        preconditionFailure("A provisioning waiter can only be awaited once")
+                    }
+                }
+                if let completedResult {
+                    continuation.resume(with: completedResult)
+                }
+            }
+        } onCancel: {
+            finish(with: .failure(CancellationError()))
+        }
+    }
+
+    private func finish(with result: Result<URL, Error>) {
+        let completion: (continuation: Continuation?, didTransition: Bool) = lock.withLock {
+            switch state {
+            case .waiting:
+                state = .finished(result)
+                return (nil, true)
+            case .suspended(let continuation):
+                state = .finished(result)
+                return (continuation, true)
+            case .finished:
+                return (nil, false)
+            }
+        }
+        guard completion.didTransition else {
+            return
+        }
+        completion.continuation?.resume(with: result)
+        didFinish()
     }
 }
 

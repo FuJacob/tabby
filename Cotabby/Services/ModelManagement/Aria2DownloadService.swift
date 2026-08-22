@@ -2,6 +2,7 @@ import Foundation
 
 nonisolated enum Aria2DownloadError: LocalizedError, Equatable {
     case executableNotFound
+    case invalidFilename
     case cancelled
     case paused
     case processFailed(exitCode: Int32, message: String)
@@ -10,6 +11,8 @@ nonisolated enum Aria2DownloadError: LocalizedError, Equatable {
         switch self {
         case .executableNotFound:
             return "aria2c executable was not found on the system."
+        case .invalidFilename:
+            return "The model filename is not valid."
         case .cancelled:
             return "Download was cancelled by the user."
         case .paused:
@@ -41,16 +44,23 @@ nonisolated final class Aria2DownloadService: @unchecked Sendable {
         guard let executableURL = executableURL ?? locator() else {
             throw Aria2DownloadError.executableNotFound
         }
+        let outputFilename = (filename as NSString).lastPathComponent
+        guard !outputFilename.isEmpty,
+              outputFilename != ".",
+              outputFilename != "..",
+              !outputFilename.contains("/") else {
+            throw Aria2DownloadError.invalidFilename
+        }
 
         try FileManager.default.createDirectory(
             at: stagingDirectory,
             withIntermediateDirectories: true
         )
-        let targetURL = stagingDirectory.appendingPathComponent(filename, isDirectory: false)
+        let targetURL = stagingDirectory.appendingPathComponent(outputFilename, isDirectory: false)
         let process = Self.makeProcess(
             executableURL: executableURL,
             sourceURL: url,
-            filename: filename,
+            filename: outputFilename,
             stagingDirectory: stagingDirectory
         )
 

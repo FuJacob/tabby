@@ -1,8 +1,17 @@
 import Foundation
 
+nonisolated enum ModelDownloadSessionError: LocalizedError, Equatable {
+    case alreadyStarted
+
+    var errorDescription: String? {
+        "A model download session can only be started once."
+    }
+}
+
 /// Bridges URLSession's callback lifecycle into one async download result with pause data.
 /// `ModelDownloadManager` owns an instance only while a fallback download is active; the lock
-/// serializes delegate queues, UI cancellation, and continuation completion.
+/// serializes delegate queues, UI cancellation, and continuation completion. Each instance owns
+/// exactly one attempt because URLSession delegate completion state cannot be safely reset.
 nonisolated final class ModelDownloadSessionDelegate:
     NSObject,
     URLSessionDownloadDelegate,
@@ -20,6 +29,7 @@ nonisolated final class ModelDownloadSessionDelegate:
     private var response: URLResponse?
     private var expectedFileSize: Int64 = NSURLSessionTransferSizeUnknown
     private var producedResumeData: Data?
+    private var hasStarted = false
     private var hasCompleted = false
     private var didReceiveTaskCompletion = false
     private var activeDownloadTask: URLSessionDownloadTask?
@@ -41,6 +51,13 @@ nonisolated final class ModelDownloadSessionDelegate:
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 self.lock.lock()
+                if self.hasStarted {
+                    self.lock.unlock()
+                    session.invalidateAndCancel()
+                    continuation.resume(throwing: ModelDownloadSessionError.alreadyStarted)
+                    return
+                }
+                self.hasStarted = true
                 if self.isUserCancelled {
                     self.lock.unlock()
                     session.invalidateAndCancel()
@@ -242,6 +259,9 @@ nonisolated final class ModelDownloadSessionDelegate:
         }
 
         guard let fileURL = completion.fileURL, let response = completion.response else {
+            if let fileURL = completion.fileURL {
+                DownloadFileRescuer.cleanup(holdingFileAt: fileURL)
+            }
             completion.continuation?.resume(throwing: URLError(.badServerResponse))
             return
         }

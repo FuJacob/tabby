@@ -48,4 +48,19 @@ final class Aria2StagingDirectoryResolverTests: XCTestCase {
         XCTAssertEqual(directory.deletingLastPathComponent(), runtimeDirectory)
         XCTAssertTrue(directory.lastPathComponent.hasSuffix("-model.gguf"))
     }
+
+    func test_legacyDirectoryKeepsThePreviousUnscopedName() {
+        let directory = Aria2StagingDirectoryResolver.legacyDirectory(
+            in: runtimeDirectory,
+            filename: "nested/model.gguf"
+        )
+
+        XCTAssertEqual(
+            directory,
+            runtimeDirectory.appendingPathComponent(
+                ".aria2-staging-model.gguf",
+                isDirectory: true
+            )
+        )
+    }
 }

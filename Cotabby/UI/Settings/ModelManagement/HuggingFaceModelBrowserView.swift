@@ -138,15 +138,15 @@ struct HuggingFaceModelBrowserView: View {
                                 file: file,
                                 repoId: repoId,
                                 state: modelDownloadManager.state(for: model),
-                                isInstalled: modelDownloadManager.isModelInstalled(filename: model.filename),
+                                isInstalled: modelDownloadManager.isModelInstalled(model),
                                 onDownload: {
                                     modelDownloadManager.download(model)
                                 },
                                 onPause: {
-                                    modelDownloadManager.pause(filename: model.filename)
+                                    modelDownloadManager.pause(model)
                                 },
                                 onCancel: {
-                                    modelDownloadManager.cancel(filename: model.filename)
+                                    modelDownloadManager.cancel(model)
                                 }
                             )
                         }
@@ -243,15 +243,7 @@ private struct HFFileRow: View {
             }
 
             if state.isDownloading || state.isPaused {
-                if let progress = state.progressFraction {
-                    ProgressView(value: progress, total: 1)
-                        .progressViewStyle(.linear)
-                        .tint(state.isPaused ? .secondary : .blue)
-                } else {
-                    ProgressView()
-                        .progressViewStyle(.linear)
-                        .tint(state.isPaused ? .secondary : .blue)
-                }
+                ModelDownloadProgressBar(state: state)
             }
         }
         .padding(.vertical, 4)
@@ -275,73 +267,13 @@ private struct HFFileRow: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
 
-            case .downloading(let progress, _, _):
-                HStack(spacing: 6) {
-                    if let progress {
-                        Text("\(Int((progress * 100).rounded()))%")
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.blue)
-                            .frame(width: 40, alignment: .trailing)
-                    } else {
-                        ProgressView()
-                            .controlSize(.small)
-                            .frame(width: 40)
-                    }
-
-                    Button {
-                        onPause()
-                    } label: {
-                        Image(systemName: "pause.circle.fill")
-                            .font(.system(size: 16))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Pause download")
-                    .help("Pause download")
-
-                    Button {
-                        onCancel()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 16))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Cancel download")
-                    .help("Cancel download")
-                }
-
-            case .paused(let progress):
-                HStack(spacing: 6) {
-                    if let progress {
-                        Text("\(Int((progress * 100).rounded()))%")
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 40, alignment: .trailing)
-                    }
-
-                    Button {
-                        onDownload()
-                    } label: {
-                        Image(systemName: "play.circle.fill")
-                            .font(.system(size: 16))
-                            .foregroundStyle(.blue)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Resume download")
-                    .help("Resume download")
-
-                    Button {
-                        onCancel()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 16))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Cancel download")
-                    .help("Cancel download")
-                }
+            case .downloading, .paused:
+                ModelDownloadTransferControls(
+                    state: state,
+                    onResume: onDownload,
+                    onPause: onPause,
+                    onCancel: onCancel
+                )
 
             case .downloaded:
                 Image(systemName: "checkmark.circle.fill")

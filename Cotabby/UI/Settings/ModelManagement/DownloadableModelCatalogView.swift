@@ -24,8 +24,8 @@ struct DownloadableModelCatalogView: View {
                     model: model,
                     state: modelDownloadManager.state(for: model),
                     onDownload: { modelDownloadManager.download(model) },
-                    onPause: { modelDownloadManager.pause(filename: model.filename) },
-                    onCancel: { modelDownloadManager.cancel(filename: model.filename) }
+                    onPause: { modelDownloadManager.pause(model) },
+                    onCancel: { modelDownloadManager.cancel(model) }
                 )
             }
 
@@ -91,7 +91,7 @@ private struct DownloadableModelRow: View {
             }
 
             if state.isDownloading || state.isPaused {
-                downloadProgressBar
+                ModelDownloadProgressBar(state: state)
             }
 
             // Failure messages get their own wrapping row. Validation errors
@@ -134,72 +134,13 @@ private struct DownloadableModelRow: View {
             Button("Get") { onDownload() }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-        case .downloading(let progress, _, _):
-            HStack(spacing: 6) {
-                if let progress {
-                    Text("\(Int((progress * 100).rounded()))%")
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.blue)
-                        .frame(width: 40, alignment: .trailing)
-                } else {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: 40)
-                }
-
-                Button {
-                    onPause()
-                } label: {
-                    Image(systemName: "pause.circle.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Pause download")
-                .help("Pause download")
-
-                Button {
-                    onCancel()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Cancel download")
-                .help("Cancel download")
-            }
-        case .paused(let progress):
-            HStack(spacing: 6) {
-                if let progress {
-                    Text("\(Int((progress * 100).rounded()))%")
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .trailing)
-                }
-
-                Button {
-                    onDownload()
-                } label: {
-                    Image(systemName: "play.circle.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.blue)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Resume download")
-                .help("Resume download")
-
-                Button {
-                    onCancel()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Cancel download")
-                .help("Cancel download")
-            }
+        case .downloading, .paused:
+            ModelDownloadTransferControls(
+                state: state,
+                onResume: onDownload,
+                onPause: onPause,
+                onCancel: onCancel
+            )
         case .downloaded:
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
@@ -244,16 +185,4 @@ private struct DownloadableModelRow: View {
         }
     }
 
-    @ViewBuilder
-    private var downloadProgressBar: some View {
-        if let progress = state.progressFraction {
-            ProgressView(value: progress, total: 1)
-                .progressViewStyle(.linear)
-                .tint(state.isPaused ? .secondary : .blue)
-        } else {
-            ProgressView()
-                .progressViewStyle(.linear)
-                .tint(state.isPaused ? .secondary : .blue)
-        }
-    }
 }

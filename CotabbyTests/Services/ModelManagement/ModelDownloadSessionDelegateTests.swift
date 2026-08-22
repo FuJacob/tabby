@@ -29,4 +29,26 @@ final class ModelDownloadSessionDelegateTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
     }
+
+    func test_delegateRejectsASecondDownloadAttempt() async {
+        let delegate = ModelDownloadSessionDelegate { _ in }
+        delegate.cancel()
+
+        do {
+            _ = try await delegate.download(from: URL(string: "https://example.com/first.gguf")!)
+        } catch is CancellationError {
+            // The first attempt consumes the single-use delegate.
+        } catch {
+            return XCTFail("Unexpected first-attempt error: \(error)")
+        }
+
+        do {
+            _ = try await delegate.download(from: URL(string: "https://example.com/second.gguf")!)
+            XCTFail("Expected the delegate to reject reuse")
+        } catch let error as ModelDownloadSessionError {
+            XCTAssertEqual(error, .alreadyStarted)
+        } catch {
+            XCTFail("Unexpected second-attempt error: \(error)")
+        }
+    }
 }

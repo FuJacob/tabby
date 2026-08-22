@@ -50,6 +50,10 @@ final class Aria2DownloadServiceTests: XCTestCase {
             "aria2c executable was not found on the system."
         )
         XCTAssertEqual(
+            Aria2DownloadError.invalidFilename.errorDescription,
+            "The model filename is not valid."
+        )
+        XCTAssertEqual(
             Aria2DownloadError.cancelled.errorDescription,
             "Download was cancelled by the user."
         )
@@ -133,6 +137,56 @@ final class Aria2DownloadServiceTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: result, encoding: .utf8), "model data")
         XCTAssertEqual(recorder.values.last?.progressFraction, 1)
         XCTAssertEqual(recorder.values.last?.speedFormatted, "1 MB/s")
+    }
+
+    func test_downloadReducesOutputToTheLeafFilename() async throws {
+        let executable = try makeExecutableScript(
+            contents: """
+            #!/bin/sh
+            directory=""
+            output=""
+            for argument in "$@"; do
+                case "$argument" in
+                    --dir=*) directory=${argument#--dir=} ;;
+                    --out=*) output=${argument#--out=} ;;
+                esac
+            done
+            printf 'model data' > "$directory/$output"
+            """
+        )
+        let stagingDirectory = makeTemporaryDirectory()
+        defer { removeFixtures(executable, stagingDirectory) }
+        let service = Aria2DownloadService { _ in }
+
+        let result = try await service.download(
+            from: URL(string: "https://example.com/model.gguf")!,
+            filename: "../model.gguf",
+            stagingDirectory: stagingDirectory,
+            executableURL: executable
+        )
+
+        XCTAssertEqual(result, stagingDirectory.appendingPathComponent("model.gguf"))
+        XCTAssertEqual(try String(contentsOf: result, encoding: .utf8), "model data")
+    }
+
+    func test_downloadRejectsRootPathAsFilename() async {
+        let service = Aria2DownloadService { _ in }
+        let stagingDirectory = makeTemporaryDirectory()
+        defer { removeFixtures(stagingDirectory) }
+
+        do {
+            _ = try await service.download(
+                from: URL(string: "https://example.com/model.gguf")!,
+                filename: "/",
+                stagingDirectory: stagingDirectory,
+                executableURL: URL(fileURLWithPath: "/usr/bin/true")
+            )
+            XCTFail("Expected a root path to be rejected")
+        } catch let error as Aria2DownloadError {
+            XCTAssertEqual(error, .invalidFilename)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
     }
 
     func test_downloadSurfacesProcessExitAndStderr() async throws {
@@ -253,7 +307,10 @@ final class Aria2DownloadServiceTests: XCTestCase {
     }
 
     private func waitForProgress(_ recorder: Aria2ProgressRecorder) async throws {
-        for _ in 0..<200 where recorder.values.isEmpty {
+        for _ in 0..<200 {
+            if !recorder.values.isEmpty {
+                return
+            }
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertFalse(recorder.values.isEmpty, "The fake process never emitted progress")

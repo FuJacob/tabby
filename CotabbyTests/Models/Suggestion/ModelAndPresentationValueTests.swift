@@ -348,7 +348,7 @@ final class RuntimeAndInputModelValueTests: XCTestCase {
             approximateSizeInGigabytes: 1.4
         )
 
-        XCTAssertEqual(model.id, "custom.gguf")
+        XCTAssertEqual(model.id, "https://example.com/custom.gguf")
         XCTAssertEqual(model.actualModelName, "custom.gguf")
         XCTAssertNil(model.expectedSizeBytes)
         XCTAssertNil(model.sha256)
