@@ -7,7 +7,8 @@ import UniformTypeIdentifiers
 /// One model's current install/download lifecycle state in local storage.
 enum ModelDownloadState: Equatable {
     case idle
-    case downloading(progress: Double?)
+    case downloading(progress: Double?, speedFormatted: String? = nil, etaFormatted: String? = nil)
+    case paused(progress: Double?)
     case downloaded
     case failed(String)
 
@@ -15,11 +16,22 @@ enum ModelDownloadState: Equatable {
         switch self {
         case .idle:
             return "Not installed"
-        case .downloading(let progress):
+        case .downloading(let progress, let speed, let eta):
             if let progress {
-                return "Downloading \(Int((progress * 100).rounded()))%"
+                let percent = Int((progress * 100).rounded())
+                if let speed, let eta {
+                    return "Downloading \(percent)% (\(speed) · ETA \(eta))"
+                } else if let speed {
+                    return "Downloading \(percent)% (\(speed))"
+                }
+                return "Downloading \(percent)%"
             }
             return "Downloading"
+        case .paused(let progress):
+            if let progress {
+                return "Paused (\(Int((progress * 100).rounded()))%)"
+            }
+            return "Paused"
         case .downloaded:
             return "Installed"
         case .failed(let message):
@@ -27,31 +39,42 @@ enum ModelDownloadState: Equatable {
         }
     }
 
-    /// Determinate progress is only available when the server reports content length.
-    /// We surface it separately so views can choose between a linear bar and an indeterminate one.
     var progressFraction: Double? {
-        guard case .downloading(let progress) = self else {
+        switch self {
+        case .downloading(let progress, _, _):
+            guard let progress else {
+                return nil
+            }
+            return min(max(progress, 0), 1)
+        case .paused(let progress):
+            guard let progress else {
+                return nil
+            }
+            return min(max(progress, 0), 1)
+        case .idle, .downloaded, .failed:
             return nil
         }
-
-        guard let progress else {
-            return nil
-        }
-
-        return min(max(progress, 0), 1)
     }
 
     var isDownloading: Bool {
         if case .downloading = self {
             return true
         }
+        return false
+    }
 
+    var isPaused: Bool {
+        if case .paused = self {
+            return true
+        }
         return false
     }
 }
 
 /// Downloads model files on demand into a user-writable runtime directory.
 /// This decouples app shipping from model shipping so model updates do not require app updates.
+///
+/// Uses `aria2c` for segmented, resumable transfers when available and falls back to URLSession.
 @MainActor
 final class ModelDownloadManager: ObservableObject {
     @Published private(set) var modelStates: [String: ModelDownloadState] = [:]
@@ -65,6 +88,18 @@ final class ModelDownloadManager: ObservableObject {
     /// `refreshModelStates` does not re-walk the (recursively scanned) directories once per model.
     private var installedModelFilenames: Set<String> = []
     private var downloadTasks: [String: Task<Void, Never>] = [:]
+    /// Metadata retained for dynamic Hugging Face rows after their task finishes. Transfer state is
+    /// keyed by source URL rather than destination filename so equal leaf names never alias.
+    private var trackedModelsByID: [String: DownloadableRuntimeModel] = [:]
+    private var activeAria2Services: [String: Aria2DownloadService] = [:]
+    private var activeSessionDelegates: [String: ModelDownloadSessionDelegate] = [:]
+    private var urlSessionResumeDataByID: [String: Data] = [:]
+
+    private enum RequestedOutcome: Equatable {
+        case paused
+        case cancelled
+    }
+    private var requestedOutcomes: [String: RequestedOutcome] = [:]
 
     init(runtimeDirectoryURL: URL? = nil) {
         let primaryDirectoryURL =
@@ -88,8 +123,96 @@ final class ModelDownloadManager: ObservableObject {
         return directories
     }
 
+    /// Reloads the set of search directories (e.g. after the LM Studio toggle changes in Settings).
+    /// Updates the installed-filename cache and all model states to match the new search paths.
+    func refreshSearchDirectories() {
+        runtimeSearchDirectories = Self.resolveSearchDirectories(primary: runtimeDirectoryURL)
+        refreshModelStates()
+    }
+
     var models: [DownloadableRuntimeModel] {
         RuntimeModelCatalog.downloadableModels
+    }
+
+    func state(for model: DownloadableRuntimeModel) -> ModelDownloadState {
+        modelStates[model.id] ?? (isInstalled(model: model) ? .downloaded : .idle)
+    }
+
+    /// Re-reads installed models from all active search directories and updates `@Published` state.
+    /// Preserves in-flight `.downloading` and `.paused` states so a refresh during transfer never drops the progress bar.
+    func refreshModelStates() {
+        recomputeInstalledModelFilenames()
+        refreshCatalogModelStates()
+        refreshDynamicModelStates(excluding: Set(models.map(\.id)))
+    }
+
+    private func refreshCatalogModelStates() {
+        for model in models {
+            let currentState = modelStates[model.id]
+            if case .downloading = currentState {
+                continue
+            }
+            if case .paused = currentState {
+                continue
+            }
+
+            if isInstalled(model: model) {
+                modelStates[model.id] = .downloaded
+            } else if currentState == .downloaded {
+                modelStates[model.id] = .idle
+            }
+        }
+    }
+
+    private func refreshDynamicModelStates(excluding catalogIDs: Set<String>) {
+        // HuggingFace models are created dynamically rather than appearing in the curated catalog.
+        // Reconcile those keys too, or a deleted dynamic model remains stuck in `.downloaded`.
+        let dynamicIDs = modelStates.keys.filter { !catalogIDs.contains($0) }
+        for downloadID in dynamicIDs {
+            guard let model = trackedModelsByID[downloadID] else {
+                modelStates.removeValue(forKey: downloadID)
+                continue
+            }
+
+            switch modelStates[downloadID] {
+            case .downloading, .paused:
+                continue
+            case .failed:
+                if isInstalled(model: model) {
+                    modelStates[downloadID] = .downloaded
+                }
+            case .idle, .downloaded, nil:
+                if isInstalled(model: model) {
+                    modelStates[downloadID] = .downloaded
+                } else {
+                    modelStates.removeValue(forKey: downloadID)
+                    trackedModelsByID.removeValue(forKey: downloadID)
+                }
+            }
+        }
+    }
+
+    /// True when any configured directory holds a file matching `filename` or any known alias.
+    func isModelInstalled(filename: String) -> Bool {
+        isInstalled(filename: filename)
+    }
+
+    /// The flat model directory intentionally treats a destination filename as installed once.
+    /// Transfer identity remains source-specific, but Cotabby never silently replaces an installed
+    /// same-name model from another repository.
+    func isModelInstalled(_ model: DownloadableRuntimeModel) -> Bool {
+        isInstalled(model: model)
+    }
+
+    /// Returns the active downloaded model options from the primary directory.
+    func installedModelOptions() -> [RuntimeModelOption] {
+        let discovered = BundledRuntimeLocator.discoverGGUFModelURLs(in: runtimeDirectoryURL)
+        return discovered.map {
+            RuntimeModelOption(
+                filename: $0.lastPathComponent,
+                url: $0
+            )
+        }.sorted { $0.displayName < $1.displayName }
     }
 
     /// The path shown in Settings and opened by "Open Folder". This is always Cotabby's own writable
@@ -97,169 +220,6 @@ final class ModelDownloadManager: ObservableObject {
     /// are read-only and surfaced only through the model picker, not this control.
     var modelsDirectoryPath: String {
         runtimeDirectoryURL.path
-    }
-
-    /// Re-reads the current search directories (including the LM Studio source when toggled) and
-    /// refreshes model states.
-    func refreshSearchDirectories() {
-        runtimeSearchDirectories = Self.resolveSearchDirectories(primary: runtimeDirectoryURL)
-        refreshModelStates()
-    }
-
-    func state(for model: DownloadableRuntimeModel) -> ModelDownloadState {
-        modelStates[model.filename] ?? .idle
-    }
-
-    func refreshModelStates() {
-        recomputeInstalledModelFilenames()
-        let catalogFilenames = Set(models.map(\.filename))
-
-        for model in models {
-            if downloadTasks[model.filename] != nil {
-                if case .downloading(let progress) = modelStates[model.filename] {
-                    modelStates[model.filename] = .downloading(progress: progress)
-                } else {
-                    modelStates[model.filename] = .downloading(progress: nil)
-                }
-            } else if isInstalled(model: model) {
-                modelStates[model.filename] = .downloaded
-            } else {
-                modelStates[model.filename] = .idle
-            }
-        }
-
-        var keysToRemove: [String] = []
-        for (filename, state) in modelStates where !catalogFilenames.contains(filename) {
-            if downloadTasks[filename] != nil {
-                continue
-            }
-            switch state {
-            case .downloading:
-                break
-            case .downloaded, .idle, .failed:
-                if isInstalled(filename: filename) {
-                    modelStates[filename] = .downloaded
-                } else {
-                    keysToRemove.append(filename)
-                }
-            }
-        }
-        for key in keysToRemove {
-            modelStates.removeValue(forKey: key)
-        }
-    }
-
-    func isModelInstalled(filename: String) -> Bool {
-        isInstalled(filename: filename)
-    }
-
-    func download(_ model: DownloadableRuntimeModel) {
-        guard downloadTasks[model.filename] == nil else {
-            CotabbyLogger.models.debug("Download already in progress for \(model.filename)")
-            return
-        }
-
-        if isInstalled(model: model) {
-            CotabbyLogger.models.debug("Model \(model.filename) already installed, skipping download")
-            modelStates[model.filename] = .downloaded
-            return
-        }
-
-        CotabbyLogger.models.info("Starting download for \(model.filename)")
-        modelStates[model.filename] = .downloading(progress: 0)
-        let task = Task { [weak self] in
-            guard let self else {
-                return
-            }
-
-            await self.performDownload(model)
-        }
-        downloadTasks[model.filename] = task
-    }
-
-    /// User-initiated cancel of an in-flight model download. Idempotent —
-    /// calling it on a filename that isn't downloading is a safe no-op.
-    ///
-    /// Cancellation flow:
-    ///   1. `Task.cancel()` flips `Task.isCancelled` and triggers the
-    ///      `withTaskCancellationHandler` block in the delegate.
-    ///   2. That block calls `URLSessionDownloadTask.cancel()`, which aborts
-    ///      the in-flight download.
-    ///   3. The delegate receives `didCompleteWithError(URLError.cancelled)`
-    ///      and resumes the continuation throwing.
-    ///   4. `performDownload`'s catch routes the error through
-    ///      `DownloadOutcomeClassifier`, sees a user cancel, and restores
-    ///      `.idle` (or `.downloaded` if a prior copy is on disk) — never
-    ///      `.failed`, since the user pressed Cancel deliberately.
-    func cancel(filename: String) {
-        guard let task = downloadTasks[filename] else {
-            return
-        }
-        task.cancel()
-    }
-
-    func openModelsDirectory() {
-        do {
-            try ensureRuntimeDirectoryExists()
-        } catch {
-            CotabbyLogger.models.error(
-                "Failed to ensure runtime directory before opening: \(error.localizedDescription)",
-                metadata: ["directory": .string(runtimeDirectoryURL.path)]
-            )
-            return
-        }
-
-        NSWorkspace.shared.open(runtimeDirectoryURL)
-    }
-
-    func importModel() {
-        let panel = NSOpenPanel()
-        panel.title = "Select a GGUF Model"
-        if let ggufType = UTType(filenameExtension: "gguf", conformingTo: .data) {
-            panel.allowedContentTypes = [ggufType]
-        }
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-
-        guard panel.runModal() == .OK else { return }
-
-        do {
-            try ensureRuntimeDirectoryExists()
-        } catch {
-            CotabbyLogger.models.error(
-                "Failed to ensure runtime directory before import: \(error.localizedDescription)",
-                metadata: ["directory": .string(runtimeDirectoryURL.path)]
-            )
-            return
-        }
-
-        // Copy files off the main thread so multi-gigabyte GGUFs don't freeze the UI.
-        let sourceURLs = panel.urls
-        let destinationDirectory = runtimeDirectoryURL
-        Task.detached {
-            let fileManager = FileManager.default
-            for sourceURL in sourceURLs {
-                let destinationURL = destinationDirectory.appendingPathComponent(
-                    sourceURL.lastPathComponent, isDirectory: false
-                )
-                if fileManager.fileExists(atPath: destinationURL.path) { continue }
-                do {
-                    try fileManager.copyItem(at: sourceURL, to: destinationURL)
-                } catch {
-                    CotabbyLogger.models.error(
-                        "Failed to import \(sourceURL.lastPathComponent): \(error.localizedDescription)",
-                        metadata: [
-                            "source": .string(sourceURL.path),
-                            "destination": .string(destinationURL.path)
-                        ]
-                    )
-                }
-            }
-            await MainActor.run { [weak self] in
-                self?.refreshModelStates()
-                self?.onModelDirectoryChanged?()
-            }
-        }
     }
 
     /// Returns `true` only when the model lives in Cotabby's user-writable model directory.
@@ -284,49 +244,364 @@ final class ModelDownloadManager: ObservableObject {
         }
     }
 
+    /// Deletes a downloaded model file from the primary runtime directory.
+    func deleteModel(_ model: RuntimeModelOption) throws {
+        deleteModel(filename: model.filename)
+    }
+
+    func download(_ model: DownloadableRuntimeModel) {
+        let downloadID = model.id
+        guard downloadTasks[downloadID] == nil else {
+            CotabbyLogger.models.debug("Download already in progress for \(model.filename)")
+            return
+        }
+
+        if isInstalled(model: model) {
+            CotabbyLogger.models.debug("Model \(model.filename) already installed, skipping download")
+            modelStates[downloadID] = .downloaded
+            return
+        }
+
+        trackedModelsByID[downloadID] = model
+        if let conflictingModel = conflictingTransfer(for: model) {
+            modelStates[downloadID] = .failed(
+                "Another source is already downloading \(model.filename). "
+                    + "Cancel that transfer before downloading this file."
+            )
+            CotabbyLogger.models.info(
+                "Blocked a conflicting model download",
+                metadata: [
+                    "active_source": .string(conflictingModel.downloadURL.absoluteString),
+                    "destination": .string(model.filename)
+                ]
+            )
+            return
+        }
+
+        requestedOutcomes.removeValue(forKey: downloadID)
+        let initialProgress = modelStates[downloadID]?.progressFraction
+        CotabbyLogger.models.info("Starting download for \(model.filename)")
+        modelStates[downloadID] = .downloading(progress: initialProgress)
+        let task = Task { [weak self] in
+            guard let self else {
+                return
+            }
+
+            await self.performDownload(model)
+        }
+        downloadTasks[downloadID] = task
+    }
+
+    /// Pauses an in-flight download, saving partial metadata so it can be resumed later.
+    func pause(_ model: DownloadableRuntimeModel) {
+        let downloadID = model.id
+        guard downloadTasks[downloadID] != nil else {
+            return
+        }
+        requestedOutcomes[downloadID] = .paused
+        if let aria2Service = activeAria2Services[downloadID] {
+            aria2Service.pause()
+        } else if let delegate = activeSessionDelegates[downloadID] {
+            delegate.pause()
+        } else if let task = downloadTasks[downloadID] {
+            task.cancel()
+        }
+    }
+
+    /// Resumes a previously paused download.
+    func resume(_ model: DownloadableRuntimeModel) {
+        download(model)
+    }
+
+    /// User-initiated cancel of an in-flight or paused model download.
+    func cancel(_ model: DownloadableRuntimeModel) {
+        let downloadID = model.id
+        requestedOutcomes[downloadID] = .cancelled
+        if let aria2Service = activeAria2Services[downloadID] {
+            aria2Service.cancel()
+        } else if let delegate = activeSessionDelegates[downloadID] {
+            delegate.cancel()
+        }
+
+        urlSessionResumeDataByID.removeValue(forKey: downloadID)
+
+        if let task = downloadTasks[downloadID] {
+            // Let the backend stop before deleting its files. Removing a staging directory while
+            // aria2c is still flushing its control file can recreate debris or corrupt the pause.
+            task.cancel()
+        } else {
+            removeResumeArtifacts(for: model)
+            requestedOutcomes.removeValue(forKey: downloadID)
+            modelStates[downloadID] = isInstalled(model: model) ? .downloaded : .idle
+            if modelStates[downloadID] == .idle {
+                trackedModelsByID.removeValue(forKey: downloadID)
+            }
+        }
+    }
+
+    func openModelsDirectory() {
+        do {
+            try ensureRuntimeDirectoryExists()
+        } catch {
+            CotabbyLogger.models.error(
+                "Failed to ensure runtime directory before opening: \(error.localizedDescription)",
+                metadata: ["directory": .string(runtimeDirectoryURL.path)]
+            )
+            return
+        }
+
+        NSWorkspace.shared.open(runtimeDirectoryURL)
+    }
+
+    func importModel() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [UTType(filenameExtension: "gguf") ?? .data]
+        panel.prompt = "Import"
+        panel.message = "Choose .gguf models to import into Cotabby"
+
+        guard panel.runModal() == .OK else {
+            return
+        }
+
+        let sourceURLs = panel.urls
+        guard !sourceURLs.isEmpty else {
+            return
+        }
+
+        let destinationDirectory = runtimeDirectoryURL
+
+        Task.detached {
+            let fileManager = FileManager.default
+            do {
+                try fileManager.createDirectory(
+                    at: destinationDirectory,
+                    withIntermediateDirectories: true
+                )
+            } catch {
+                CotabbyLogger.models.error(
+                    "Failed to create the model directory: \(error.localizedDescription)",
+                    metadata: ["destination": .string(destinationDirectory.path)]
+                )
+                return
+            }
+
+            var importedAnyModel = false
+            for sourceURL in sourceURLs {
+                let targetURL = destinationDirectory.appendingPathComponent(
+                    sourceURL.lastPathComponent,
+                    isDirectory: false
+                )
+                do {
+                    // Resolve symlinks before comparing. A selected alias can otherwise point at
+                    // the installed target and make a delete-then-copy sequence delete its source.
+                    let canonicalSource = sourceURL.resolvingSymlinksInPath().standardizedFileURL
+                    let canonicalTarget = targetURL.resolvingSymlinksInPath().standardizedFileURL
+                    if canonicalSource == canonicalTarget {
+                        continue
+                    }
+
+                    // Import is intentionally non-destructive. Replacing an installed multi-GB
+                    // model without an explicit overwrite prompt risks losing a known-good file.
+                    if fileManager.fileExists(atPath: targetURL.path) {
+                        continue
+                    }
+
+                    let stagingURL = destinationDirectory.appendingPathComponent(
+                        ".import-\(UUID().uuidString)",
+                        isDirectory: false
+                    )
+                    defer { try? fileManager.removeItem(at: stagingURL) }
+                    try fileManager.copyItem(at: sourceURL, to: stagingURL)
+
+                    // Another import may have won the race while this copy was running.
+                    guard !fileManager.fileExists(atPath: targetURL.path) else {
+                        continue
+                    }
+                    try fileManager.moveItem(at: stagingURL, to: targetURL)
+                    importedAnyModel = true
+                    CotabbyLogger.models.info(
+                        "Imported model: \(sourceURL.lastPathComponent)",
+                        metadata: ["destination": .string(targetURL.path)]
+                    )
+                } catch {
+                    CotabbyLogger.models.error(
+                        "Failed to import \(sourceURL.lastPathComponent): \(error.localizedDescription)",
+                        metadata: [
+                            "source": .string(sourceURL.path),
+                            "destination": .string(targetURL.path)
+                        ]
+                    )
+                }
+            }
+
+            guard importedAnyModel else {
+                return
+            }
+            await MainActor.run { [weak self] in
+                self?.refreshModelStates()
+                self?.onModelDirectoryChanged?()
+            }
+        }
+    }
+
     private func performDownload(_ model: DownloadableRuntimeModel) async {
+        let downloadID = model.id
         defer {
-            downloadTasks[model.filename] = nil
+            downloadTasks[downloadID] = nil
+            activeAria2Services.removeValue(forKey: downloadID)
+            activeSessionDelegates.removeValue(forKey: downloadID)
+            requestedOutcomes.removeValue(forKey: downloadID)
+            switch modelStates[downloadID] {
+            case .paused, .downloaded, .failed:
+                break
+            case .idle, .downloading, nil:
+                trackedModelsByID.removeValue(forKey: downloadID)
+            }
         }
 
         do {
-            try await performSingleFileDownload(model, url: model.downloadURL)
+            let aria2ExecutableURL = await resolveAria2Executable()
+
+            if requestedOutcomes[downloadID] == .paused {
+                throw Aria2DownloadError.paused
+            }
+            if requestedOutcomes[downloadID] == .cancelled || Task.isCancelled {
+                throw CancellationError()
+            }
+
+            if let aria2ExecutableURL {
+                try await performAria2Download(model, executableURL: aria2ExecutableURL)
+            } else {
+                try await performURLSessionDownload(model)
+            }
 
             CotabbyLogger.models.info("Download complete for \(model.filename)")
             // Keep the discovered-filename cache in step with the new file on disk so an immediate
             // re-`download(_:)` of the same model is recognized as installed instead of re-fetched.
             recomputeInstalledModelFilenames()
-            modelStates[model.filename] = .downloaded
+            modelStates[downloadID] = .downloaded
             onModelDirectoryChanged?()
         } catch {
-            if DownloadOutcomeClassifier.isUserCancellation(error) {
+            if DownloadOutcomeClassifier.isUserPause(error) {
+                CotabbyLogger.models.info("Download paused by user for \(model.filename)")
+                let currentProgress = modelStates[downloadID]?.progressFraction
+                modelStates[downloadID] = .paused(progress: currentProgress)
+            } else if DownloadOutcomeClassifier.isUserCancellation(error) {
                 CotabbyLogger.models.info("Download cancelled by user for \(model.filename)")
-                modelStates[model.filename] = isInstalled(model: model) ? .downloaded : .idle
+                removeResumeArtifacts(for: model)
+                modelStates[downloadID] = isInstalled(model: model) ? .downloaded : .idle
             } else {
                 CotabbyLogger.models.error("Download failed for \(model.filename): \(error.localizedDescription)")
-                modelStates[model.filename] = .failed(error.localizedDescription)
+                modelStates[downloadID] = .failed(error.localizedDescription)
             }
         }
     }
 
-    private func performSingleFileDownload(
-        _ model: DownloadableRuntimeModel, url: URL
+    /// Provisioning is an optimization, so a genuine setup failure selects URLSession. Task
+    /// cancellation is also absorbed here long enough for `performDownload` to publish pause or
+    /// cancel according to the manager's recorded user intent.
+    private func resolveAria2Executable() async -> URL? {
+        if let executableURL = Aria2Locator.executableURL() {
+            return executableURL
+        }
+
+        do {
+            return try await Aria2Provisioner.shared.provisionIfNeeded()
+        } catch {
+            if !Task.isCancelled {
+                CotabbyLogger.models.debug(
+                    "aria2 is unavailable; using URLSession: \(error.localizedDescription)"
+                )
+            }
+            return nil
+        }
+    }
+
+    private func performAria2Download(
+        _ model: DownloadableRuntimeModel,
+        executableURL: URL
     ) async throws {
+        let downloadID = model.id
+        try ensureRuntimeDirectoryExists()
+        let destinationURL = modelFileURL(filename: model.filename)
+        let stagingDir = aria2StagingDirectoryURL(for: model)
+
+        let service = Aria2DownloadService { [weak self] progress in
+            Task { @MainActor [weak self] in
+                guard let self, self.downloadTasks[downloadID] != nil else { return }
+                self.modelStates[downloadID] = .downloading(
+                    progress: progress.progressFraction,
+                    speedFormatted: progress.speedFormatted,
+                    etaFormatted: progress.etaFormatted
+                )
+            }
+        }
+        activeAria2Services[downloadID] = service
+
+        let downloadedFile = try await service.download(
+            from: model.downloadURL,
+            filename: model.filename,
+            stagingDirectory: stagingDir,
+            executableURL: executableURL
+        )
+
+        let fileManager = FileManager.default
+        do {
+            try await Self.validateAndPromoteStagedFile(
+                downloadedFile,
+                to: destinationURL,
+                // aria2 does not expose an independent response length; validate the catalog size once.
+                declaredContentLength: nil,
+                expectedSize: model.expectedSizeBytes,
+                expectedSHA256: model.sha256
+            )
+            try? fileManager.removeItem(at: stagingDir)
+        } catch {
+            try? fileManager.removeItem(at: stagingDir)
+            throw error
+        }
+    }
+
+    private func performURLSessionDownload(_ model: DownloadableRuntimeModel) async throws {
+        let downloadID = model.id
         try ensureRuntimeDirectoryExists()
         let destinationURL = modelFileURL(filename: model.filename)
         let delegate = ModelDownloadSessionDelegate { [weak self] progress in
             Task { @MainActor [weak self] in
-                guard let self, self.downloadTasks[model.filename] != nil else { return }
-                self.modelStates[model.filename] = .downloading(progress: progress)
+                guard let self, self.downloadTasks[downloadID] != nil else { return }
+                self.modelStates[downloadID] = .downloading(progress: progress)
             }
         }
-        let downloadResult = try await delegate.download(from: url)
+        activeSessionDelegates[downloadID] = delegate
+
+        let resumeData = urlSessionResumeDataByID[downloadID]
+        let downloadResult: ModelDownloadSessionDelegate.DownloadResult
+        do {
+            downloadResult = try await delegate.download(
+                from: model.downloadURL,
+                resumeData: resumeData
+            )
+        } catch let interruption as URLSessionDownloadInterruption {
+            switch interruption {
+            case .paused(let newResumeData):
+                if let newResumeData {
+                    urlSessionResumeDataByID[downloadID] = newResumeData
+                }
+                throw Aria2DownloadError.paused
+            }
+        } catch {
+            // Invalid or stale resume data must not poison every subsequent Retry attempt.
+            urlSessionResumeDataByID.removeValue(forKey: downloadID)
+            throw error
+        }
         let fileManager = FileManager.default
         let temporaryURL = downloadResult.temporaryURL
 
-        // The rescued temp file is ours now. Any failure before it is moved into staging (a user
-        // cancel, a non-2xx response — exactly when HuggingFace returns a small HTML error page, or
-        // the move itself failing) must remove it, or it leaks in the temp directory.
+        urlSessionResumeDataByID.removeValue(forKey: downloadID)
+
         do {
             try Task.checkCancellation()
             try validate(response: downloadResult.response)
@@ -346,18 +621,18 @@ final class ModelDownloadManager: ObservableObject {
             throw error
         }
 
-        // From here the staged file must be removed on any validation OR promotion failure.
+        let responseLength = downloadResult.response.expectedContentLength
+        let declaredContentLength = downloadResult.expectedFileSize > 0
+            ? downloadResult.expectedFileSize
+            : responseLength
         do {
-            try ModelFileValidator.validateCompleteness(
-                of: stagingURL, declaredContentLength: downloadResult.response.expectedContentLength
+            try await Self.validateAndPromoteStagedFile(
+                stagingURL,
+                to: destinationURL,
+                declaredContentLength: declaredContentLength,
+                expectedSize: model.expectedSizeBytes,
+                expectedSHA256: model.sha256
             )
-            try ModelFileValidator.validateSize(
-                of: stagingURL, expectedBytes: model.expectedSizeBytes
-            )
-            try ModelFileValidator.validateSHA256(
-                of: stagingURL, expectedSHA256: model.sha256
-            )
-            try Self.promoteStagedFile(at: stagingURL, to: destinationURL, fileManager: fileManager)
         } catch {
             try? fileManager.removeItem(at: stagingURL)
             throw error
@@ -368,8 +643,36 @@ final class ModelDownloadManager: ObservableObject {
     /// an atomic replace is used so a crash or error mid-promotion can never destroy the existing good
     /// model before the replacement is committed (the old delete-then-move could leave nothing
     /// installed). `replaceItemAt` removes the staged file as part of the swap.
-    private static func promoteStagedFile(
-        at stagingURL: URL, to destinationURL: URL, fileManager: FileManager
+    private nonisolated static func validateAndPromoteStagedFile(
+        _ stagingURL: URL,
+        to destinationURL: URL,
+        declaredContentLength: Int64?,
+        expectedSize: Int64?,
+        expectedSHA256: String?
+    ) async throws {
+        let validationTask = Task.detached(priority: .utility) {
+            if let declaredContentLength {
+                try ModelFileValidator.validateCompleteness(
+                    of: stagingURL,
+                    declaredContentLength: declaredContentLength
+                )
+            }
+            try ModelFileValidator.validateSize(of: stagingURL, expectedBytes: expectedSize)
+            try ModelFileValidator.validateSHA256(of: stagingURL, expectedSHA256: expectedSHA256)
+            try Self.promoteStagedFile(at: stagingURL, to: destinationURL)
+        }
+
+        try await withTaskCancellationHandler {
+            try await validationTask.value
+        } onCancel: {
+            validationTask.cancel()
+        }
+    }
+
+    private nonisolated static func promoteStagedFile(
+        at stagingURL: URL,
+        to destinationURL: URL,
+        fileManager: FileManager = .default
     ) throws {
         if fileManager.fileExists(atPath: destinationURL.path) {
             _ = try fileManager.replaceItemAt(destinationURL, withItemAt: stagingURL)
@@ -383,9 +686,10 @@ final class ModelDownloadManager: ObservableObject {
             return
         }
 
-        guard (200..<300).contains(httpResponse.statusCode) else {
+        guard (200...299).contains(httpResponse.statusCode) else {
             throw LlamaRuntimeError.unavailable(
-                "Model download failed with status code \(httpResponse.statusCode).")
+                "Model download failed with status code \(httpResponse.statusCode)."
+            )
         }
     }
 
@@ -400,17 +704,52 @@ final class ModelDownloadManager: ObservableObject {
         runtimeDirectoryURL.appendingPathComponent(filename, isDirectory: false)
     }
 
+    /// Resolves an isolated, URL-unique staging directory for a model download to prevent cross-repo collisions.
+    private func aria2StagingDirectoryURL(for model: DownloadableRuntimeModel) -> URL {
+        Aria2StagingDirectoryResolver.directory(
+            in: runtimeDirectoryURL,
+            downloadURL: model.downloadURL,
+            filename: model.filename
+        )
+    }
+
+    /// Removes only the active source's resume state after its backend has stopped.
+    /// Filename-only directories from development builds are intentionally left untouched because
+    /// they contain no source identity and therefore cannot be deleted safely on this model's behalf.
+    private func removeResumeArtifacts(for model: DownloadableRuntimeModel) {
+        urlSessionResumeDataByID.removeValue(forKey: model.id)
+        try? FileManager.default.removeItem(at: aria2StagingDirectoryURL(for: model))
+    }
+
     private func isInstalled(model: DownloadableRuntimeModel) -> Bool {
         model.allKnownFilenames.contains(where: isInstalled(filename:))
+    }
+
+    /// The runtime directory is a flat namespace. A second source may not claim a destination
+    /// while the first source is active or paused; the user must cancel the retained transfer first.
+    private func conflictingTransfer(
+        for model: DownloadableRuntimeModel
+    ) -> DownloadableRuntimeModel? {
+        let destinationKey = model.filename.precomposedStringWithCanonicalMapping.lowercased()
+        for (downloadID, trackedModel) in trackedModelsByID where downloadID != model.id {
+            let trackedDestinationKey = trackedModel.filename
+                .precomposedStringWithCanonicalMapping
+                .lowercased()
+            guard trackedDestinationKey == destinationKey else {
+                continue
+            }
+            if downloadTasks[downloadID] != nil || modelStates[downloadID]?.isPaused == true {
+                return trackedModel
+            }
+        }
+        return nil
     }
 
     private func isInstalled(filename: String) -> Bool {
         installedModelFilenames.contains(filename)
     }
 
-    /// Rebuilds the discovered-filename cache by recursively scanning every search directory. The
-    /// recursion is what lets a nested LM Studio install (`<publisher>/<repo>/<file>.gguf`) be
-    /// recognized as installed; a flat `directory/filename` join would miss it.
+    /// Rebuilds the discovered-filename cache by recursively scanning every search directory.
     private func recomputeInstalledModelFilenames() {
         var filenames: Set<String> = []
         for directoryURL in runtimeSearchDirectories {
@@ -419,130 +758,5 @@ final class ModelDownloadManager: ObservableObject {
             }
         }
         installedModelFilenames = filenames
-    }
-
-}
-
-/// Bridges `URLSessionDownloadDelegate` callbacks into one async result plus incremental progress
-/// updates. This exists as its own type because `URLSession.download(from:)` gives us the file move
-/// convenience but not observable progress suitable for SwiftUI.
-private final class ModelDownloadSessionDelegate: NSObject, URLSessionDownloadDelegate {
-    struct DownloadResult {
-        let temporaryURL: URL
-        let response: URLResponse
-    }
-
-    private let progressHandler: @Sendable (Double?) -> Void
-    private var continuation: CheckedContinuation<DownloadResult, Error>?
-    private var downloadedFileURL: URL?
-    private var response: URLResponse?
-    private var hasCompleted = false
-    // Held so `withTaskCancellationHandler` can call .cancel() on it when the
-    // surrounding Swift Task is cancelled. Without this, Task.cancel() would
-    // only flip Task.isCancelled — the URLSession download would keep running
-    // until natural completion, wasting bytes and ignoring the user's intent.
-    private var activeDownloadTask: URLSessionDownloadTask?
-    // Any error thrown while rescuing the temp file in `didFinishDownloadingTo`.
-    // We can't throw from the delegate callback, so we stash it and re-raise from
-    // `didCompleteWithError`, which is the single funnel that resumes the continuation.
-    private var finishError: Error?
-
-    init(progressHandler: @escaping @Sendable (Double?) -> Void) {
-        self.progressHandler = progressHandler
-    }
-
-    func download(from url: URL) async throws -> DownloadResult {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
-
-        // withTaskCancellationHandler bridges Swift Task cancellation into the
-        // URLSession world. When `Task.cancel()` runs upstream (e.g., from
-        // ModelDownloadManager.cancel(filename:)), the onCancel block fires and
-        // aborts the URLSession download task. The delegate then receives
-        // didCompleteWithError(URLError.cancelled), which resumes the
-        // continuation throwing — and the catch in performDownload routes it
-        // through DownloadOutcomeClassifier as a user cancel rather than a
-        // hard failure.
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                self.continuation = continuation
-                let task = session.downloadTask(with: url)
-                self.activeDownloadTask = task
-                task.resume()
-            }
-        } onCancel: { [weak self] in
-            // URLSessionDownloadTask.cancel() is thread-safe by Apple's docs,
-            // so calling it from arbitrary cancellation contexts is fine.
-            self?.activeDownloadTask?.cancel()
-        }
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        downloadTask: URLSessionDownloadTask,
-        didWriteData bytesWritten: Int64,
-        totalBytesWritten: Int64,
-        totalBytesExpectedToWrite: Int64
-    ) {
-        let progress: Double?
-        if totalBytesExpectedToWrite > 0 {
-            progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
-        } else {
-            progress = nil
-        }
-
-        progressHandler(progress)
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        downloadTask: URLSessionDownloadTask,
-        didFinishDownloadingTo location: URL
-    ) {
-        // Synchronous handoff into a URL we own. The rescue logic lives in
-        // `DownloadFileRescuer` so the race-sensitive part can be unit-tested
-        // without standing up a real URLSession — see that type's doc comment
-        // for why the move must happen before this callback returns.
-        do {
-            downloadedFileURL = try DownloadFileRescuer.rescue(temporaryFileAt: location)
-        } catch {
-            // Can't throw from a delegate callback; stash and re-raise from
-            // `didCompleteWithError`, the single funnel that resumes the
-            // continuation.
-            finishError = error
-        }
-        response = downloadTask.response
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard !hasCompleted else {
-            return
-        }
-        hasCompleted = true
-
-        defer {
-            continuation = nil
-            session.finishTasksAndInvalidate()
-        }
-
-        // Surface transport errors first, then the delegate-side rescue error. Either way we
-        // must clean up any holding file we already claimed so failed downloads don't leak.
-        if let failure = error ?? finishError {
-            if let holdingURL = downloadedFileURL {
-                DownloadFileRescuer.cleanup(holdingFileAt: holdingURL)
-                downloadedFileURL = nil
-            }
-            continuation?.resume(throwing: failure)
-            return
-        }
-
-        guard let downloadedFileURL, let response else {
-            continuation?.resume(throwing: URLError(.badServerResponse))
-            return
-        }
-
-        continuation?.resume(
-            returning: DownloadResult(temporaryURL: downloadedFileURL, response: response))
     }
 }

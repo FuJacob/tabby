@@ -20,6 +20,26 @@ final class DownloadOutcomeClassifierTests: XCTestCase {
         XCTAssertTrue(DownloadOutcomeClassifier.isUserCancellation(URLError(.cancelled)))
     }
 
+    func test_isUserCancellation_trueForAria2Cancelled() {
+        XCTAssertTrue(DownloadOutcomeClassifier.isUserCancellation(Aria2DownloadError.cancelled))
+    }
+
+    func test_isUserCancellation_falseForAria2Paused() {
+        XCTAssertFalse(DownloadOutcomeClassifier.isUserCancellation(Aria2DownloadError.paused))
+    }
+
+    func test_isUserPause_trueForAria2Paused() {
+        XCTAssertTrue(DownloadOutcomeClassifier.isUserPause(Aria2DownloadError.paused))
+    }
+
+    func test_isUserPause_falseForAria2Cancelled() {
+        XCTAssertFalse(DownloadOutcomeClassifier.isUserPause(Aria2DownloadError.cancelled))
+    }
+
+    func test_isUserPause_falseForURLErrorCancelled() {
+        XCTAssertFalse(DownloadOutcomeClassifier.isUserPause(URLError(.cancelled)))
+    }
+
     // MARK: - real failures
 
     func test_isUserCancellation_falseForURLErrorTimedOut() {

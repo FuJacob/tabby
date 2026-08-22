@@ -19,12 +19,22 @@ import Foundation
 /// failure path and the user would see "The operation couldn't be completed"
 /// despite having pressed Cancel themselves. This helper makes the
 /// distinction testable in isolation, with no URLSession or Task setup.
-enum DownloadOutcomeClassifier {
+nonisolated enum DownloadOutcomeClassifier {
     static func isUserCancellation(_ error: Error) -> Bool {
         if error is CancellationError {
             return true
         }
         if let urlError = error as? URLError, urlError.code == .cancelled {
+            return true
+        }
+        if let aria2Error = error as? Aria2DownloadError, aria2Error == .cancelled {
+            return true
+        }
+        return false
+    }
+
+    static func isUserPause(_ error: Error) -> Bool {
+        if let aria2Error = error as? Aria2DownloadError, aria2Error == .paused {
             return true
         }
         return false

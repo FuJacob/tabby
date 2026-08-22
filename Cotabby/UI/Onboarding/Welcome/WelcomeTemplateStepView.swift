@@ -344,7 +344,7 @@ private struct TemplateCard: View {
             Text("Preparing download…")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-        case .downloading(let progress):
+        case .downloading(let progress, _, _):
             VStack(alignment: .leading, spacing: 4) {
                 if let progress {
                     ProgressView(value: progress)
@@ -354,6 +354,17 @@ private struct TemplateCard: View {
                     // No fraction reported yet: fall back to the default (circular) spinner, since
                     // macOS's linear style renders nothing for an indeterminate ProgressView.
                     ProgressView()
+                }
+                Text(state.statusText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        case .paused(let progress):
+            VStack(alignment: .leading, spacing: 4) {
+                if let progress {
+                    ProgressView(value: progress)
+                        .progressViewStyle(.linear)
+                        .tint(.secondary)
                 }
                 Text(state.statusText)
                     .font(.system(size: 11))

@@ -24,7 +24,8 @@ struct DownloadableModelCatalogView: View {
                     model: model,
                     state: modelDownloadManager.state(for: model),
                     onDownload: { modelDownloadManager.download(model) },
-                    onCancel: { modelDownloadManager.cancel(filename: model.filename) }
+                    onPause: { modelDownloadManager.pause(model) },
+                    onCancel: { modelDownloadManager.cancel(model) }
                 )
             }
 
@@ -65,6 +66,7 @@ private struct DownloadableModelRow: View {
     let model: DownloadableRuntimeModel
     let state: ModelDownloadState
     let onDownload: () -> Void
+    let onPause: () -> Void
     let onCancel: () -> Void
 
     var body: some View {
@@ -88,8 +90,8 @@ private struct DownloadableModelRow: View {
                 modelActionButton
             }
 
-            if state.isDownloading {
-                downloadProgressBar
+            if state.isDownloading || state.isPaused {
+                ModelDownloadProgressBar(state: state)
             }
 
             // Failure messages get their own wrapping row. Validation errors
@@ -132,32 +134,13 @@ private struct DownloadableModelRow: View {
             Button("Get") { onDownload() }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-        case .downloading(let progress):
-            HStack(spacing: 6) {
-                if let progress {
-                    Text("\(Int((progress * 100).rounded()))%")
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.blue)
-                        .frame(width: 40, alignment: .trailing)
-                } else {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: 40)
-                }
-                // Plain SF Symbol button keeps the row compact and matches
-                // the "Get"/"Retry" button affordance scale. Cancel is the
-                // affirmative action while downloading, so it gets the same
-                // visual weight as Get does in the idle state.
-                Button {
-                    onCancel()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Cancel download")
-            }
+        case .downloading, .paused:
+            ModelDownloadTransferControls(
+                state: state,
+                onResume: onDownload,
+                onPause: onPause,
+                onCancel: onCancel
+            )
         case .downloaded:
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
@@ -181,15 +164,11 @@ private struct DownloadableModelRow: View {
         switch state {
         case .idle:
             installationStatus = "Not installed"
-        case .downloading:
+        case .downloading, .paused:
             installationStatus = state.statusText
         case .downloaded:
             installationStatus = "Installed"
         case .failed:
-            // Terse here; the full message lives in `failureMessageRow` below
-            // where it has room to wrap. Mixing a multi-line error into the
-            // size-label line would either truncate or push the size off
-            // screen on smaller windows.
             installationStatus = "Download failed"
         }
 
@@ -200,21 +179,10 @@ private struct DownloadableModelRow: View {
         switch state {
         case .downloaded: return .green
         case .downloading: return .blue
+        case .paused: return .orange
         case .failed: return .red
         case .idle: return .secondary
         }
     }
 
-    @ViewBuilder
-    private var downloadProgressBar: some View {
-        if let progress = state.progressFraction {
-            ProgressView(value: progress, total: 1)
-                .progressViewStyle(.linear)
-                .tint(.blue)
-        } else {
-            ProgressView()
-                .progressViewStyle(.linear)
-                .tint(.blue)
-        }
-    }
 }
