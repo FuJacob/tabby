@@ -76,18 +76,32 @@ final class SuggestionCoordinator: ObservableObject {
     // barrier task that the next generation must cross before it can ask the runtime for output.
     var cacheResetSequence: UInt64 = 0
     var pendingCacheReset: (sequence: UInt64, task: Task<Void, Never>)?
-    /// One accepted clipboard-relevance verdict per (field session, pasteboard state). The verdict
-    /// used to be re-evaluated against the live prefix on every request, and because the clipboard
-    /// section precedes the typed prefix in the prompt, every flip rewrote the prompt HEAD and
-    /// collapsed the engine's reusable common prefix back to zero (a full re-prefill). A pinned
-    /// non-nil verdict keeps the prompt head stable for the field session; a nil verdict keeps
-    /// re-evaluating because adding nothing to the prompt cannot destabilize the head, and the
-    /// clipboard may only become relevant once more text is typed. A new copy (change count) or a
-    /// field switch (focus sequence) always re-evaluates. See `pinnedClipboardContext`.
+    /// One accepted clipboard-relevance verdict per (field session, pasteboard state). Pinning the
+    /// bounded source prevents relevance from flipping on every keystroke; the request factory may
+    /// still select different lines from that source as the live prefix becomes more specific. A nil
+    /// verdict keeps re-evaluating because adding nothing cannot destabilize the prompt head and the
+    /// clipboard may become relevant later. A field switch, new copy, or freshness expiry always
+    /// re-evaluates. See `pinnedClipboardContext`.
     struct ClipboardPrefaceMemo {
         let focusSequence: UInt64
         let changeCount: Int
         let value: String?
+        let expiresAt: Date
+
+        /// A memo hit must still honor the relevance filter's freshness window. Without this check,
+        /// one accepted copy could remain in prompts for an arbitrarily long same-field session.
+        func reusableValue(
+            focusSequence: UInt64,
+            changeCount: Int,
+            now: Date
+        ) -> String? {
+            guard self.focusSequence == focusSequence,
+                  self.changeCount == changeCount,
+                  now < expiresAt else {
+                return nil
+            }
+            return value
+        }
     }
 
     var clipboardPrefaceMemo: ClipboardPrefaceMemo?

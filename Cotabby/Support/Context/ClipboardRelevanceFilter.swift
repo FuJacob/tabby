@@ -21,23 +21,34 @@ import Foundation
 @MainActor
 final class ClipboardRelevanceFilter: ClipboardRelevanceFiltering {
     static let staleThresholdSeconds: TimeInterval = 300
-    private static let minimumTokenLength = 3
+    /// Bound text before tokenization and memoization so a large pasteboard cannot allocate an
+    /// unbounded CJK bigram set on the main actor. Final prompt selection applies a much smaller cap.
+    static let maximumEvaluatedCharacters = 8_000
 
     private var lastKnownChangeCount: Int?
+    private var lastObservationDate: Date?
     private var lastChangeDate: Date?
     private let dateProvider: () -> Date
+
+    var acceptedContextExpiresAt: Date? {
+        lastChangeDate?.addingTimeInterval(Self.staleThresholdSeconds)
+    }
 
     init(dateProvider: @escaping () -> Date = { Date() }) {
         self.dateProvider = dateProvider
     }
 
-    /// Returns `clipboard` unchanged when it looks relevant, or `nil` when it should be dropped.
+    /// Returns a bounded clipboard value when it looks relevant, or `nil` when it should be dropped.
     func filter(
         clipboard: String?,
         pasteboardChangeCount: Int,
         precedingText: String
     ) -> String? {
         guard let clipboard else { return nil }
+        let boundedClipboard = String(clipboard.prefix(Self.maximumEvaluatedCharacters))
+        let now = dateProvider()
+        let previousObservationDate = lastObservationDate
+        lastObservationDate = now
 
         guard let baselineChangeCount = lastKnownChangeCount else {
             // First observation: record the baseline so we can detect *new* copies, but leave
@@ -49,25 +60,30 @@ final class ClipboardRelevanceFilter: ClipboardRelevanceFiltering {
 
         if pasteboardChangeCount != baselineChangeCount {
             lastKnownChangeCount = pasteboardChangeCount
-            lastChangeDate = dateProvider()
+            // NSPasteboard exposes no copy timestamp. The copy happened sometime after our previous
+            // observation, so use that earlier boundary as a conservative source time. If the gap is
+            // already five minutes, the content may be stale and must fail closed.
+            guard let previousObservationDate,
+                  now.timeIntervalSince(previousObservationDate) < Self.staleThresholdSeconds else {
+                lastChangeDate = nil
+                return nil
+            }
+            lastChangeDate = previousObservationDate
         }
 
         guard let lastChangeDate,
-              dateProvider().timeIntervalSince(lastChangeDate) < Self.staleThresholdSeconds
+              now.timeIntervalSince(lastChangeDate) < Self.staleThresholdSeconds
         else {
             return nil
         }
 
-        let clipboardTokens = Self.tokens(from: clipboard)
-        let prefixTokens = Self.tokens(from: precedingText)
-        guard !clipboardTokens.isDisjoint(with: prefixTokens) else {
+        guard PromptContextSanitizer.hasMeaningfulRelevance(
+            between: boundedClipboard,
+            and: precedingText
+        ) else {
             return nil
         }
 
-        return clipboard
-    }
-
-    private static func tokens(from text: String) -> Set<String> {
-        PromptContextSanitizer.significantTokens(from: text, minimumLength: minimumTokenLength)
+        return boundedClipboard
     }
 }

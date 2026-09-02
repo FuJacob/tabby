@@ -65,10 +65,13 @@ enum BaseCompletionPromptRenderer {
             sections.append(Self.contextSection("notes", "Notes the writer keeps in mind: \(notes)", priority: 40, maxChars: 1300))
         }
         if let clip = Self.nonEmpty(clipboardContext) {
-            sections.append(Self.contextSection("clipboard", "On the clipboard: \(clip)", priority: 35, maxChars: 400))
+            // Section caps include their labels; add the fixed framing length so the selector's full
+            // 400-character clipboard allowance survives this second, global-budget-aware boundary.
+            sections.append(Self.contextSection("clipboard", "On the clipboard: \(clip)", priority: 35, maxChars: 418))
         }
         if let screen = Self.nonEmpty(visualContextSummary) {
-            sections.append(Self.contextSection("screen", "Nearby on screen: \(screen)", priority: 30, maxChars: 500))
+            // Same alignment for the 700-character visual allowance and its 18-character label.
+            sections.append(Self.contextSection("screen", "Nearby on screen: \(screen)", priority: 30, maxChars: 718))
         }
         // The caret prefix: top priority so it is never starved, kept by its END (the text nearest
         // the caret), and rendered last with no label so the model continues from where the user

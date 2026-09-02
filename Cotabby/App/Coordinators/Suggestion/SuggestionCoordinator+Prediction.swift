@@ -302,10 +302,10 @@ extension SuggestionCoordinator {
     }
 
     /// Resolves the clipboard prompt section under the pinning policy documented on
-    /// `clipboardPrefaceMemo`: an accepted (non-nil) verdict is reused for the rest of the field
-    /// session so the prompt head stays stable and the engine's KV common prefix survives; a nil
-    /// verdict re-evaluates per request because it adds nothing to the prompt and the clipboard
-    /// may only become relevant once more text is typed. A new copy or a field switch always
+    /// `clipboardPrefaceMemo`: an accepted (non-nil) verdict is reused only while the copy remains
+    /// fresh, so short-term prompt stability does not turn into indefinite same-field retention. A
+    /// nil verdict re-evaluates per request because it adds nothing to the prompt and the clipboard
+    /// may only become relevant once more text is typed. A new copy, field switch, or expiry always
     /// re-evaluates.
     private func pinnedClipboardContext(rawContext: FocusedInputSnapshot) -> String? {
         guard settingsSnapshot.isClipboardContextEnabled else {
@@ -313,11 +313,14 @@ extension SuggestionCoordinator {
         }
 
         let changeCount = clipboardContextProvider.currentChangeCount
+        let now = Date()
         if let memo = clipboardPrefaceMemo,
-           memo.focusSequence == rawContext.focusChangeSequence,
-           memo.changeCount == changeCount,
-           memo.value != nil {
-            return memo.value
+           let value = memo.reusableValue(
+               focusSequence: rawContext.focusChangeSequence,
+               changeCount: changeCount,
+               now: now
+           ) {
+            return value
         }
 
         // Same bounded window the downstream distiller sees, so the relevance gate and the
@@ -327,15 +330,17 @@ extension SuggestionCoordinator {
             configuration: configuration,
             engine: settingsSnapshot.selectedEngine
         )
+        let selectionPrefix = SuggestionRequestFactory.contextSelectionPrefix(from: truncatedPrefix)
         let value = clipboardRelevanceFilter.filter(
             clipboard: clipboardContextProvider.currentContext(),
             pasteboardChangeCount: changeCount,
-            precedingText: truncatedPrefix
+            precedingText: selectionPrefix
         )
         clipboardPrefaceMemo = ClipboardPrefaceMemo(
             focusSequence: rawContext.focusChangeSequence,
             changeCount: changeCount,
-            value: value
+            value: value,
+            expiresAt: clipboardRelevanceFilter.acceptedContextExpiresAt ?? now
         )
         return value
     }

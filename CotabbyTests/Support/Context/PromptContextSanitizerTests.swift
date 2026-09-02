@@ -204,6 +204,79 @@ final class PromptContextSanitizerTests: XCTestCase {
         XCTAssertEqual(PromptContextSanitizer.sanitizeOCR("meeting notes abeW"), "meeting notes")
     }
 
+    // MARK: - significantTokens
+
+    func test_significantTokens_emitsCJKBigramEvidence() {
+        let tokens = PromptContextSanitizer.significantTokens(from: "发布计划")
+
+        XCTAssertTrue(tokens.contains("发布"))
+        XCTAssertTrue(tokens.contains("布计"))
+        XCTAssertTrue(tokens.contains("计划"))
+    }
+
+    func test_significantTokens_omitsSingletonCJKAndCommonEnglishWords() {
+        XCTAssertFalse(PromptContextSanitizer.significantTokens(from: "会").contains("会"))
+        XCTAssertFalse(PromptContextSanitizer.significantTokens(from: "します").contains("ます"))
+        XCTAssertFalse(PromptContextSanitizer.significantTokens(from: "것입니다").contains("것입니다"))
+        XCTAssertTrue(PromptContextSanitizer.significantTokens(from: "배포 계획을").contains("계획"))
+        XCTAssertFalse(PromptContextSanitizer.significantTokens(from: "the deployment").contains("the"))
+        XCTAssertTrue(PromptContextSanitizer.significantTokens(from: "the deployment").contains("deployment"))
+    }
+
+    func test_significantTokens_normalizesFullWidthLatin() {
+        XCTAssertTrue(PromptContextSanitizer.significantTokens(from: "ＡＰＩ status").contains("api"))
+    }
+
+    func test_significantTokens_supportsNewerCJKExtensions() {
+        XCTAssertTrue(
+            PromptContextSanitizer.significantTokens(from: "\u{2A700}\u{2A701}")
+                .contains("\u{2A700}\u{2A701}")
+        )
+        XCTAssertTrue(
+            PromptContextSanitizer.significantTokens(from: "\u{31350}\u{31351}")
+                .contains("\u{31350}\u{31351}")
+        )
+    }
+
+    func test_relevanceEvidence_requiresStrongCJKOverlap() {
+        XCTAssertFalse(
+            PromptContextSanitizer.hasMeaningfulRelevance(
+                between: "发布按钮",
+                and: "发布计划正在审核"
+            )
+        )
+        XCTAssertTrue(
+            PromptContextSanitizer.hasMeaningfulRelevance(
+                between: "发布计划等待审核",
+                and: "发布计划正在"
+            )
+        )
+        XCTAssertFalse(
+            PromptContextSanitizer.hasMeaningfulRelevance(
+                between: "給与明細を共有します",
+                and: "この処理を実行します"
+            )
+        )
+        XCTAssertFalse(
+            PromptContextSanitizer.hasMeaningfulRelevance(
+                between: "급여 명세를 공유합니다",
+                and: "이 작업을 실행합니다"
+            )
+        )
+        XCTAssertFalse(
+            PromptContextSanitizer.hasMeaningfulRelevance(
+                between: "급여 명세는 안전할 것입니다",
+                and: "이 작업은 실행될 것입니다"
+            )
+        )
+        XCTAssertFalse(
+            PromptContextSanitizer.hasMeaningfulRelevance(
+                between: "급여를 합니다",
+                and: "회의를 합니다"
+            )
+        )
+    }
+
     // MARK: - containsAlphanumericSignal
 
     func test_containsAlphanumericSignal_returnsTrueForMixedInput() {

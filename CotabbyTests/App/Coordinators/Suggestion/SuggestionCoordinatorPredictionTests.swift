@@ -45,6 +45,30 @@ final class SuggestionCoordinatorPredictionTests: XCTestCase {
         XCTAssertNotNil(rig.interactionState.activeSession)
     }
 
+    func test_clipboardPrefaceMemo_reusesOnlyMatchingFreshClipboard() {
+        let now = Date()
+        let memo = SuggestionCoordinator.ClipboardPrefaceMemo(
+            focusSequence: 7,
+            changeCount: 42,
+            value: "project context",
+            expiresAt: now.addingTimeInterval(60)
+        )
+
+        XCTAssertEqual(
+            memo.reusableValue(focusSequence: 7, changeCount: 42, now: now),
+            "project context"
+        )
+        XCTAssertNil(memo.reusableValue(focusSequence: 8, changeCount: 42, now: now))
+        XCTAssertNil(memo.reusableValue(focusSequence: 7, changeCount: 43, now: now))
+        XCTAssertNil(
+            memo.reusableValue(
+                focusSequence: 7,
+                changeCount: 42,
+                now: now.addingTimeInterval(60)
+            )
+        )
+    }
+
     // MARK: - Gates before generation
 
     func test_schedulePrediction_disabledAppGoesStraightToDisabledState() async {

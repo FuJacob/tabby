@@ -122,6 +122,22 @@ final class BaseCompletionPromptRendererTests: XCTestCase {
         XCTAssertEqual(without, "Once upon")
     }
 
+    func test_sourceLabelsDoNotSilentlyReduceSelectedContextCaps() {
+        let clipboard = String(repeating: "c", count: 400)
+        let visual = String(repeating: "v", count: 700)
+        let prompt = BaseCompletionPromptRenderer.prompt(
+            prefixText: "project status",
+            applicationName: "Notes",
+            userName: nil,
+            clipboardContext: clipboard,
+            visualContextSummary: visual,
+            contextBudget: 2_000
+        )
+
+        XCTAssertTrue(prompt.contains("On the clipboard: \(clipboard)"))
+        XCTAssertTrue(prompt.contains("Nearby on screen: \(visual)"))
+    }
+
     func test_tokenBudgetAdmitsAPrefixLargerThanTheOldCharacterBudget() {
         // 2500 characters of ordinary prose is ~600 estimated tokens: comfortably inside the
         // shipped token budget even though it exceeds the old 2400-character cap. The whole

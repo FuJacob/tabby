@@ -88,6 +88,54 @@ final class ClipboardRelevanceFilterTests: XCTestCase {
         XCTAssertNil(result)
     }
 
+    func test_freshClipboard_matchesCJKTermsWithoutWhitespaceBoundaries() {
+        _ = filter.filter(
+            clipboard: "baseline",
+            pasteboardChangeCount: 1,
+            precedingText: ""
+        )
+
+        let result = filter.filter(
+            clipboard: "发布说明和发布计划",
+            pasteboardChangeCount: 2,
+            precedingText: "发布计划正在审核"
+        )
+
+        XCTAssertEqual(result, "发布说明和发布计划")
+    }
+
+    func test_freshClipboard_singleCJKCharacterOverlapReturnsNil() {
+        _ = filter.filter(
+            clipboard: "baseline",
+            pasteboardChangeCount: 1,
+            precedingText: ""
+        )
+
+        let result = filter.filter(
+            clipboard: "会议预算已经批准",
+            pasteboardChangeCount: 2,
+            precedingText: "发布会马上开始"
+        )
+
+        XCTAssertNil(result)
+    }
+
+    func test_freshClipboard_commonEnglishWordDoesNotEstablishRelevance() {
+        _ = filter.filter(
+            clipboard: "baseline",
+            pasteboardChangeCount: 1,
+            precedingText: ""
+        )
+
+        let result = filter.filter(
+            clipboard: "the quarterly lunch menu",
+            pasteboardChangeCount: 2,
+            precedingText: "the deployment status"
+        )
+
+        XCTAssertNil(result)
+    }
+
     func test_tokenOverlap_isCaseInsensitive() {
         _ = filter.filter(
             clipboard: "irrelevant baseline content",
@@ -101,6 +149,23 @@ final class ClipboardRelevanceFilterTests: XCTestCase {
             precedingText: "the deployment is running"
         )
         XCTAssertEqual(result, "Deployment Pipeline")
+    }
+
+    func test_freshClipboard_isBoundedBeforeMatchingAndReturn() {
+        _ = filter.filter(
+            clipboard: "baseline",
+            pasteboardChangeCount: 1,
+            precedingText: ""
+        )
+        let clipboard = String(repeating: "project ", count: 2_000)
+
+        let result = filter.filter(
+            clipboard: clipboard,
+            pasteboardChangeCount: 2,
+            precedingText: "project status"
+        )
+
+        XCTAssertEqual(result?.count, ClipboardRelevanceFilter.maximumEvaluatedCharacters)
     }
 
     // MARK: - Staleness
@@ -130,29 +195,61 @@ final class ClipboardRelevanceFilterTests: XCTestCase {
         XCTAssertNil(result)
     }
 
-    func test_newCopyResetsStalenessClock() {
+    func test_expirationIsDerivedFromCopyTimeAndDoesNotSlideOnReuse() {
         _ = filter.filter(
             clipboard: "baseline",
             pasteboardChangeCount: 1,
             precedingText: ""
         )
-
-        // First real copy.
+        let previousObservationDate = now!
+        now = now.addingTimeInterval(1)
         _ = filter.filter(
-            clipboard: "first content",
+            clipboard: "project context",
             pasteboardChangeCount: 2,
-            precedingText: "first content"
+            precedingText: "project status"
         )
+        let expectedExpiry = previousObservationDate.addingTimeInterval(
+            ClipboardRelevanceFilter.staleThresholdSeconds
+        )
+        XCTAssertEqual(filter.acceptedContextExpiresAt, expectedExpiry)
 
-        // Time passes past the staleness threshold.
+        now = now.addingTimeInterval(120)
+        _ = filter.filter(
+            clipboard: "project context",
+            pasteboardChangeCount: 2,
+            precedingText: "project status"
+        )
+        XCTAssertEqual(filter.acceptedContextExpiresAt, expectedExpiry)
+    }
+
+    func test_changeDiscoveredAfterLongObservationGapFailsClosed() {
+        _ = filter.filter(
+            clipboard: "baseline",
+            pasteboardChangeCount: 1,
+            precedingText: ""
+        )
         now = now.addingTimeInterval(ClipboardRelevanceFilter.staleThresholdSeconds + 1)
 
-        // A new copy resets the clock.
-        let result = filter.filter(
-            clipboard: "second content matching prefix",
-            pasteboardChangeCount: 3,
-            precedingText: "second content"
+        // The pasteboard exposes no copy time, so after a long observation gap this content may
+        // already be stale. Record the new baseline but do not inject it.
+        XCTAssertNil(
+            filter.filter(
+                clipboard: "unknown age content",
+                pasteboardChangeCount: 2,
+                precedingText: "unknown age"
+            )
         )
-        XCTAssertEqual(result, "second content matching prefix")
+
+        // A subsequent change observed inside the freshness window has a conservative source time
+        // and becomes eligible normally.
+        now = now.addingTimeInterval(1)
+        XCTAssertEqual(
+            filter.filter(
+                clipboard: "fresh project context",
+                pasteboardChangeCount: 3,
+                precedingText: "project context"
+            ),
+            "fresh project context"
+        )
     }
 }

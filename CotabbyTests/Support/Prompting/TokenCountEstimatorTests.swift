@@ -34,6 +34,23 @@ final class TokenCountEstimatorTests: XCTestCase {
         XCTAssertEqual(fiveWords, oneWord * 5)
     }
 
+    func test_cjkCharactersUseConservativeDenseEstimate() {
+        XCTAssertEqual(TokenCountEstimator.estimate("发布计划"), 4)
+        XCTAssertGreaterThan(
+            TokenCountEstimator.estimate("发布计划发布计划"),
+            TokenCountEstimator.estimate("abcdefgh")
+        )
+    }
+
+    func test_mixedLatinAndCJKCountsBothRuns() {
+        XCTAssertEqual(TokenCountEstimator.estimate("API上下文"), 4)
+    }
+
+    func test_cjkExtensionCharactersUseDenseEstimate() {
+        XCTAssertEqual(TokenCountEstimator.estimate("\u{2A700}\u{2A701}"), 2)
+        XCTAssertEqual(TokenCountEstimator.estimate("\u{31350}\u{31351}"), 2)
+    }
+
     func test_splitsOnPunctuationBoundaries() {
         // Punctuation creates token boundaries (like real subword tokenizers), so a contraction or a
         // punctuation-joined identifier estimates more tokens than the same letters with none.

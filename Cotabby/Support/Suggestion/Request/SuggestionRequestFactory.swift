@@ -18,7 +18,30 @@ struct SuggestionRequestBuildResult: Equatable, Sendable {
 /// Pure prompt-policy surface for the autocomplete pipeline.
 /// This type has no access to UserDefaults, tasks, overlays, or runtime services.
 enum SuggestionRequestFactory {
-    private static let maxClipboardContextCharacters = 1_200
+    /// Optional context should match the user's current thought, not any topic mentioned far back in
+    /// the full prompt window. A smaller caret-local query also bounds multilingual tokenization work.
+    private static let maxContextSelectionPrefixCharacters = 600
+
+    /// Auxiliary sources receive independent line and character caps before global prompt budgeting.
+    /// These match the renderer's effective source limits, so selection—not a later silent clip—decides
+    /// which clipboard and OCR evidence survives.
+    private static let baseClipboardContextLimits = ContextRelevanceSelector.Limits(
+        maxLines: 3,
+        maxCharacters: 400
+    )
+    private static let baseVisualContextLimits = ContextRelevanceSelector.Limits(
+        maxLines: 6,
+        maxCharacters: 700
+    )
+    private static let baseVisualFallbackCharacters = 500
+    private static let foundationClipboardContextLimits = ContextRelevanceSelector.Limits(
+        maxLines: 8,
+        maxCharacters: 1_200
+    )
+    private static let foundationVisualContextLimits = ContextRelevanceSelector.Limits(
+        maxLines: 12,
+        maxCharacters: VisualContextConfiguration.default.maxSummaryCharacters
+    )
 
     /// Require at least one non-whitespace character so we don't suggest on a blank field.
     /// No trailing-space gate — the debounce handles rapid keystroke settling, and
@@ -41,6 +64,7 @@ enum SuggestionRequestFactory {
             configuration: configuration,
             engine: settings.selectedEngine
         )
+        let contextSelectionPrefix = contextSelectionPrefix(from: prefixText)
         let completionLengthInstruction = settings.effectiveWordRange.promptInstruction
         let userName = activeUserName(settings: settings)
         // Custom rules are hidden from users (CustomRulesCatalog.isUserFacingEnabled == false): the
@@ -61,10 +85,14 @@ enum SuggestionRequestFactory {
         let boundedClipboardContext = activeClipboardContext(
             rawContext: clipboardContext,
             settings: settings,
-            prefixText: prefixText
+            prefixText: contextSelectionPrefix,
+            limits: clipboardContextLimits(for: settings.selectedEngine)
         )
         let boundedVisualContextSummary = activeVisualContextSummary(
-            rawSummary: visualContextSummary
+            rawSummary: visualContextSummary,
+            prefixText: contextSelectionPrefix,
+            limits: visualContextLimits(for: settings.selectedEngine),
+            fallbackMaxCharacters: visualFallbackCharacters(for: settings.selectedEngine)
         )
         // The composed surface description; nil when the user disabled it or the surface class
         // suppresses it (code editors, terminals, anonymous generic apps). The composer sanitizes
@@ -171,6 +199,42 @@ enum SuggestionRequestFactory {
         return trailingWords.isEmpty ? characterWindow : trailingWords
     }
 
+    /// The exact caret-local tail used by both the clipboard freshness/relevance gate and downstream
+    /// line selection. Exposed so the coordinator and factory cannot silently evaluate different
+    /// windows and disagree about whether a source is relevant.
+    static func contextSelectionPrefix(from promptPrefix: String) -> String {
+        String(promptPrefix.suffix(maxContextSelectionPrefixCharacters))
+    }
+
+    private static func clipboardContextLimits(
+        for engine: SuggestionEngineKind
+    ) -> ContextRelevanceSelector.Limits {
+        engine == .appleIntelligence
+            ? foundationClipboardContextLimits
+            : baseClipboardContextLimits
+    }
+
+    private static func visualContextLimits(
+        for engine: SuggestionEngineKind
+    ) -> ContextRelevanceSelector.Limits {
+        engine == .appleIntelligence
+            ? foundationVisualContextLimits
+            : baseVisualContextLimits
+    }
+
+    private static func visualFallbackCharacters(for engine: SuggestionEngineKind) -> Int? {
+        switch engine {
+        case .appleIntelligence:
+            return foundationVisualContextLimits.maxCharacters
+        case .llamaOpenSource:
+            return baseVisualFallbackCharacters
+        case .openAICompatible:
+            // A configured endpoint may be on the public internet. Without relevance evidence,
+            // omitting passive screen text is safer than transmitting the local fallback.
+            return nil
+        }
+    }
+
     private static func activeUserName(
         settings: SuggestionSettingsSnapshot
     ) -> String? {
@@ -180,7 +244,8 @@ enum SuggestionRequestFactory {
     private static func activeClipboardContext(
         rawContext: String?,
         settings: SuggestionSettingsSnapshot,
-        prefixText: String
+        prefixText: String,
+        limits: ContextRelevanceSelector.Limits
     ) -> String? {
         guard settings.isClipboardContextEnabled,
               let rawContext
@@ -195,14 +260,19 @@ enum SuggestionRequestFactory {
             return nil
         }
 
-        let distilled = ClipboardContentDistiller.distill(
+        return ClipboardContentDistiller.distill(
             clipboard: sanitizedContext,
-            prefixText: prefixText
+            prefixText: prefixText,
+            limits: limits
         )
-        return clippedText(distilled, maxCharacters: maxClipboardContextCharacters)
     }
 
-    private static func activeVisualContextSummary(rawSummary: String?) -> String? {
+    private static func activeVisualContextSummary(
+        rawSummary: String?,
+        prefixText: String,
+        limits: ContextRelevanceSelector.Limits,
+        fallbackMaxCharacters: Int?
+    ) -> String? {
         guard let rawSummary else {
             return nil
         }
@@ -214,18 +284,29 @@ enum SuggestionRequestFactory {
             return nil
         }
 
-        return sanitizedSummary
-    }
+        let deduplicatedSummary = ContextRelevanceSelector.removingPrefixDuplicateLines(
+            from: sanitizedSummary,
+            prefixText: prefixText
+        )
+        guard !deduplicatedSummary.isEmpty else { return nil }
 
-    private static func clippedText(_ text: String, maxCharacters: Int) -> String {
-        guard text.count > maxCharacters else {
-            return text
+        // OCR is collected once per field, then selected again at request time against the live
+        // caret prefix. Strong lexical/CJK evidence promotes a compact excerpt; when evidence is
+        // inconclusive, the bounded shipping fallback below preserves conversational recall.
+        if let selected = ContextRelevanceSelector.selectRelevantLines(
+            from: deduplicatedSummary,
+            prefixText: prefixText,
+            limits: limits
+        ) {
+            return selected
         }
 
-        let suffix = "..."
-        let allowedPrefixCount = max(maxCharacters - suffix.count, 0)
-        return String(text.prefix(allowedPrefixCount))
-            .trimmingCharacters(in: .whitespacesAndNewlines) + suffix
+        // Local engines preserve the shipping fallback when lexical/CJK evidence is inconclusive:
+        // a reply and draft can be semantically related without sharing literal terms. Public/LAN
+        // endpoints receive no passive screen fallback; a future measured semantic ranker can safely
+        // improve their recall without transmitting unrelated text.
+        guard let fallbackMaxCharacters else { return nil }
+        return String(deduplicatedSummary.prefix(max(0, fallbackMaxCharacters)))
     }
 
     /// Picks the per-request token budget from the *effective* word range (preset or custom) and

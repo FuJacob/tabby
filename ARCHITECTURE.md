@@ -266,8 +266,12 @@ or endpoint mode so mapped weights and Metal buffers do not stay resident unnece
 
 Context sources are independently enabled and bounded: recent AX prefix/trailing text, surface
 metadata, user rules/extended context, relevant clipboard content, visual OCR, language, and settings.
-[PromptContextSanitizer.swift](Cotabby/Support/Context/PromptContextSanitizer.swift) sanitizes optional text,
-and prompt renderers apply per-section budgets.
+[PromptContextSanitizer.swift](Cotabby/Support/Context/PromptContextSanitizer.swift) sanitizes optional text
+and extracts Latin terms plus CJK bigrams. [ContextRelevanceSelector.swift](Cotabby/Support/Context/ContextRelevanceSelector.swift)
+then ranks clipboard and OCR lines against the live caret prefix under source-local line/character caps.
+Local engines retain a bounded visual fallback for semantically related text without lexical overlap;
+configured endpoints receive visual text only when relevance evidence survives. Prompt renderers apply
+the remaining global section budget.
 
 [ClipboardContextProvider.swift](Cotabby/Services/Context/ClipboardContextProvider.swift) reads a
 fresh bounded value at request time rather than recording clipboard history. Relevance and distillation
@@ -403,8 +407,8 @@ policies, prompt utilities, normalization, and layout logic should receive focus
 | Rapid Tab leaks to the host after exhausting a tail | PostExhaustionAcceptanceState, acceptance coordinator |
 | Acceptance key passes through or is stolen | InputMonitor, acceptance validation |
 | Wrong or repeated inserted text | SuggestionInserter, InputSuppressionController, reconciler |
-| Clipboard context is irrelevant | ClipboardRelevanceFilter, ClipboardContentDistiller |
-| Screenshot context is stale/noisy | VisualContextCoordinator, OCRTextHygiene |
+| Clipboard context is irrelevant | ClipboardRelevanceFilter, ClipboardContentDistiller, ContextRelevanceSelector |
+| Screenshot context is stale/noisy | VisualContextCoordinator, OCRTextHygiene, ContextRelevanceSelector |
 | Emoji or macro conflicts with suggestions | InlineCommandCoordinator, feature trigger machine |
 | Permission loop or lost grant | PermissionManager, PermissionGuidanceController, app identity |
 | Settings/onboarding window issue | SettingsCoordinator, WelcomeCoordinator |

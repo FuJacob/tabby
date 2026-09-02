@@ -196,6 +196,10 @@ protocol ClipboardContextProviding: AnyObject {
 
 @MainActor
 protocol ClipboardRelevanceFiltering: AnyObject {
+    /// Absolute expiry of the currently accepted clipboard value, derived from the observed copy
+    /// time rather than from each field/request that reuses it.
+    var acceptedContextExpiresAt: Date? { get }
+
     /// Returns `clipboard` when it should be injected into the prompt, or `nil` to drop it.
     ///
     /// `precedingText` should be the same bounded window the downstream distiller will see,
@@ -205,6 +209,12 @@ protocol ClipboardRelevanceFiltering: AnyObject {
         pasteboardChangeCount: Int,
         precedingText: String
     ) -> String?
+}
+
+extension ClipboardRelevanceFiltering {
+    /// Test doubles or alternate filters without a source-age clock fail closed: their accepted value
+    /// is not memoized beyond the request that produced it.
+    var acceptedContextExpiresAt: Date? { nil }
 }
 
 @MainActor

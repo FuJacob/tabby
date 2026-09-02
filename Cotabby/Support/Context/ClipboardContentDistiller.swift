@@ -1,33 +1,28 @@
 import Foundation
 
-/// Extracts only the clipboard lines that share meaningful tokens with the user's current
-/// prefix text. Short clipboard content passes through unchanged; longer content is filtered
-/// to the lines most likely to help the autocomplete model.
-enum ClipboardContentDistiller {
-    private static let compactLineThreshold = 3
-    private static let headFallbackCharacters = 300
+/// Selects the bounded clipboard lines that are relevant to the user's current caret context.
+///
+/// `ClipboardRelevanceFilter` remains the owner of permission-adjacent freshness and pasteboard
+/// identity. This value only performs the second, line-level pass after that gate succeeds. Keeping
+/// the two responsibilities separate prevents one matching line from admitting unrelated neighbors,
+/// which was especially harmful for short copied blocks and long clipboard head fallbacks.
+nonisolated enum ClipboardContentDistiller {
+    static let defaultLimits = ContextRelevanceSelector.Limits(
+        maxLines: 3,
+        maxCharacters: 400
+    )
 
-    /// Returns a distilled version of `clipboard` containing only lines relevant to `prefixText`.
-    ///
-    /// - Clipboard with ≤3 lines or empty `prefixText` is returned as-is.
-    /// - Longer clipboard keeps only lines whose tokens overlap with `prefixText`.
-    /// - If no individual line overlaps, the first 300 characters are returned as a head fallback.
-    static func distill(clipboard: String, prefixText: String) -> String {
-        let lines = clipboard.components(separatedBy: "\n")
-        guard lines.count > compactLineThreshold else { return clipboard }
-
-        let prefixTokens = PromptContextSanitizer.significantTokens(from: prefixText)
-        guard !prefixTokens.isEmpty else { return clipboard }
-
-        let relevantLines = lines.filter { line in
-            let lineTokens = PromptContextSanitizer.significantTokens(from: line)
-            return !lineTokens.isDisjoint(with: prefixTokens)
-        }
-
-        if relevantLines.isEmpty {
-            return String(clipboard.prefix(headFallbackCharacters))
-        }
-
-        return relevantLines.joined(separator: "\n")
+    /// Returns relevant clipboard lines in their original order, or `nil` when no line shares
+    /// meaningful Latin terms or CJK bigrams with `prefixText`.
+    static func distill(
+        clipboard: String,
+        prefixText: String,
+        limits: ContextRelevanceSelector.Limits = defaultLimits
+    ) -> String? {
+        ContextRelevanceSelector.selectRelevantLines(
+            from: clipboard,
+            prefixText: prefixText,
+            limits: limits
+        )
     }
 }

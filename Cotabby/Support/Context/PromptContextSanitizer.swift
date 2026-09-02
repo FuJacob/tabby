@@ -7,7 +7,7 @@ import Foundation
 /// ANSI color escapes, and other prompt-shaped symbols. Those tokens are not useful semantic
 /// context for autocomplete, and small local models can copy them back as output. Keeping this as
 /// a pure `Support/` helper makes the policy deterministic, shared, and easy to test.
-enum PromptContextSanitizer {
+nonisolated enum PromptContextSanitizer {
     private static let ansiEscapePattern = "\u{001B}\\[[0-?]*[ -/]*[@-~]"
     private static let allowedCharacters = CharacterSet.alphanumerics
         .union(.whitespacesAndNewlines)
@@ -62,11 +62,241 @@ enum PromptContextSanitizer {
         return bounded.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Extracts lowercased tokens of at least `minimumLength` characters, splitting on
-    /// non-alphanumeric boundaries. Used by clipboard relevance and distillation logic.
+    /// Extracts normalized terms for clipboard and OCR relevance checks.
+    ///
+    /// Whitespace-delimited words work for Latin and Korean text, while Chinese/Japanese content does
+    /// not reliably expose the same boundaries. Alongside general words and complete Hangul runs, we
+    /// therefore emit overlapping two-character terms for Han and Katakana content. Hiragana-only
+    /// grammar is deliberately excluded; relevance policy also requires multiple shared bigrams.
     static func significantTokens(from text: String, minimumLength: Int = 3) -> Set<String> {
-        let words = text.lowercased().components(separatedBy: .alphanumerics.inverted)
-        return Set(words.filter { $0.count >= minimumLength })
+        let normalized = normalizedForRelevance(text)
+        var tokens = wordTokens(in: normalized, minimumLength: minimumLength)
+        tokens.formUnion(cjkBigrams(in: normalized))
+        return tokens
+    }
+
+    /// Precomputed terms let a selector compare many candidate lines without repeatedly tokenizing
+    /// the same caret prefix on the main-actor request path.
+    struct RelevanceTerms: Equatable, Sendable {
+        let words: Set<String>
+        let cjkBigrams: Set<String>
+    }
+
+    static func relevanceTerms(from text: String, minimumWordLength: Int = 3) -> RelevanceTerms {
+        let normalized = normalizedForRelevance(text)
+        return RelevanceTerms(
+            words: wordTokens(in: normalized, minimumLength: minimumWordLength),
+            cjkBigrams: cjkBigrams(in: normalized)
+        )
+    }
+
+    /// Separates word and CJK evidence so source selectors can demand a stronger signal than one
+    /// ubiquitous two-character fragment. Two shared CJK bigrams imply at least a shared three-
+    /// character run (or two distinct terms), while one meaningful Latin/technical word is enough.
+    struct RelevanceEvidence: Equatable, Sendable {
+        let wordOverlapCount: Int
+        let cjkBigramOverlapCount: Int
+
+        var isMeaningful: Bool {
+            wordOverlapCount > 0 || cjkBigramOverlapCount >= 2
+        }
+
+        var score: Int {
+            wordOverlapCount * 3 + cjkBigramOverlapCount
+        }
+    }
+
+    static func relevanceEvidence(
+        between lhs: String,
+        and rhs: String,
+        minimumWordLength: Int = 3
+    ) -> RelevanceEvidence {
+        relevanceEvidence(
+            between: relevanceTerms(from: lhs, minimumWordLength: minimumWordLength),
+            and: relevanceTerms(from: rhs, minimumWordLength: minimumWordLength)
+        )
+    }
+
+    static func relevanceEvidence(
+        between lhs: RelevanceTerms,
+        and rhs: RelevanceTerms
+    ) -> RelevanceEvidence {
+        RelevanceEvidence(
+            wordOverlapCount: overlapCount(lhs.words, rhs.words),
+            cjkBigramOverlapCount: overlapCount(lhs.cjkBigrams, rhs.cjkBigrams)
+        )
+    }
+
+    private static func overlapCount(_ lhs: Set<String>, _ rhs: Set<String>) -> Int {
+        let (smaller, larger) = lhs.count <= rhs.count ? (lhs, rhs) : (rhs, lhs)
+        return smaller.reduce(into: 0) { count, term in
+            if larger.contains(term) {
+                count += 1
+            }
+        }
+    }
+
+    static func hasMeaningfulRelevance(between lhs: String, and rhs: String) -> Bool {
+        relevanceEvidence(between: lhs, and: rhs).isMeaningful
+    }
+
+    private static func normalizedForRelevance(_ text: String) -> String {
+        // Compatibility normalization folds full-width Latin/digits and visually-equivalent forms
+        // before matching. This is especially useful for OCR and mixed CJK/ASCII clipboard text.
+        text.precomposedStringWithCompatibilityMapping.lowercased()
+    }
+
+    private static func wordTokens(in normalizedText: String, minimumLength: Int) -> Set<String> {
+        enum RunKind: Equatable {
+            case general
+            case hangul
+        }
+
+        var words = Set<String>()
+        var run = ""
+        var runKind: RunKind?
+
+        func commitRun() {
+            let term = runKind == .hangul ? normalizedHangulWord(run) : run
+            let requiredLength = runKind == .hangul ? 2 : minimumLength
+            if term.count >= requiredLength, !relevanceStopWords.contains(term) {
+                words.insert(term)
+            }
+            run = ""
+            runKind = nil
+        }
+
+        for character in normalizedText {
+            let nextKind: RunKind?
+            if isHangul(character) {
+                // Korean uses spaces between lexical words. Matching the complete run avoids treating
+                // shared grammatical endings such as `합니다` as independent relevance evidence.
+                nextKind = .hangul
+            } else {
+                let isAlphanumeric = character.unicodeScalars.allSatisfy {
+                    CharacterSet.alphanumerics.contains($0)
+                }
+                nextKind = isAlphanumeric && !isCJK(character) ? .general : nil
+            }
+
+            guard let nextKind else {
+                commitRun()
+                continue
+            }
+            if let runKind, runKind != nextKind {
+                commitRun()
+            }
+            runKind = nextKind
+            run.append(character)
+        }
+        commitRun()
+        return words
+    }
+
+    /// Reduces common Korean inflection/particle forms to the content-bearing stem before matching.
+    /// This avoids privacy-sensitive false positives where unrelated sentences share only polite
+    /// grammar such as `것입니다` or attached `합니다`, while retaining `배포`, `계획`, and `공유`.
+    private static func normalizedHangulWord(_ word: String) -> String {
+        var result = word
+        for suffix in hangulVerbEndings where result.count >= suffix.count && result.hasSuffix(suffix) {
+            result.removeLast(suffix.count)
+            break
+        }
+        for particle in hangulParticles where result.count >= particle.count && result.hasSuffix(particle) {
+            result.removeLast(particle.count)
+            break
+        }
+        return result
+    }
+
+    private static let hangulVerbEndings = [
+        "겠습니다", "었습니다", "았습니다", "였습니다", "입니다", "습니다", "합니다", "됩니다"
+    ]
+    private static let hangulParticles = [
+        "으로", "에서", "에게", "부터", "까지", "처럼", "보다",
+        "은", "는", "이", "가", "을", "를", "에", "로", "와", "과", "도", "만"
+    ]
+
+    /// High-frequency connective words are poor evidence that two contexts describe the same task.
+    /// Keeping this list intentionally small avoids turning relevance selection into a language model
+    /// while preventing matches such as two unrelated English lines that merely share "the".
+    private static let relevanceStopWords: Set<String> = [
+        "and", "are", "for", "from", "has", "have", "into", "not", "that", "the",
+        "then", "this", "was", "when", "will", "with", "you", "your"
+    ]
+
+    private static func cjkBigrams(in text: String) -> Set<String> {
+        var terms = Set<String>()
+        var run: [Character] = []
+
+        func addTerms(for run: [Character]) {
+            // One-character overlap is far too common to establish relevance in CJK prose. Requiring
+            // a bigram still catches meaningful shared terms such as `发布` without matching every
+            // unrelated sentence that happens to contain `的` or `会`.
+            guard run.count >= 2 else { return }
+            for index in 0..<(run.count - 1) {
+                terms.insert(String([run[index], run[index + 1]]))
+            }
+        }
+
+        for character in text {
+            if isBigramContentCharacter(character) {
+                run.append(character)
+            } else {
+                // Hiragana grammar and Hangul word endings are handled conservatively elsewhere;
+                // neither participates in free-form sliding bigrams.
+                addTerms(for: run)
+                run.removeAll(keepingCapacity: true)
+            }
+        }
+        addTerms(for: run)
+        return terms
+    }
+
+    private static func isBigramContentCharacter(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { scalar in
+            switch scalar.value {
+            case 0x30A0...0x30FF,   // Katakana
+                 0x3400...0x4DBF,   // CJK Unified Ideographs Extension A
+                 0x4E00...0x9FFF,   // CJK Unified Ideographs
+                 0xF900...0xFAFF,   // CJK Compatibility Ideographs
+                 0x20000...0x2A6DF, // CJK Unified Ideographs Extension B
+                 0x2A700...0x2EE5F, // CJK Unified Ideographs Extensions C-F and I
+                 0x30000...0x3134F, // CJK Unified Ideographs Extension G
+                 0x31350...0x323AF: // CJK Unified Ideographs Extension H
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
+    private static func isHangul(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { scalar in
+            (0xAC00...0xD7AF).contains(scalar.value)
+                || (0x1100...0x11FF).contains(scalar.value)
+        }
+    }
+
+    private static func isCJK(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { scalar in
+            switch scalar.value {
+            case 0x3400...0x4DBF,   // CJK Unified Ideographs Extension A
+                 0x4E00...0x9FFF,   // CJK Unified Ideographs
+                 0xF900...0xFAFF,   // CJK Compatibility Ideographs
+                 0x3040...0x309F,   // Hiragana
+                 0x30A0...0x30FF,   // Katakana
+                 0xAC00...0xD7AF,   // Hangul syllables
+                 0x1100...0x11FF,   // Hangul Jamo
+                 0x20000...0x2A6DF, // CJK Unified Ideographs Extension B
+                 0x2A700...0x2EE5F, // CJK Unified Ideographs Extensions C-F and I
+                 0x30000...0x3134F, // CJK Unified Ideographs Extension G
+                 0x31350...0x323AF: // CJK Unified Ideographs Extension H
+                return true
+            default:
+                return false
+            }
+        }
     }
 
     static func containsAlphanumericSignal(_ text: String) -> Bool {
