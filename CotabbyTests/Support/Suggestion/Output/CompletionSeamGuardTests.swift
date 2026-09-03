@@ -318,6 +318,65 @@ final class CompletionSeamGuardTests: XCTestCase {
         )
     }
 
+    /// The final result is complete by definition, so a correctable last word needs no trailing
+    /// boundary to be suppressed; only the streaming verdict waits for one.
+    func testFinalVerdictSuppressesCorrectableLeadingWordWithoutTrailingBoundary() {
+        XCTAssertEqual(
+            CompletionSeamGuard.verdict(
+                precedingText: "Je veux ",
+                completion: "ecrir",
+                spellingAssessment: { $0 == "ecrir" ? .correctableTypo : .known }
+            ),
+            .leadingWordMisspelling(word: "ecrir")
+        )
+    }
+
+    /// A connector continuing the caret word ("don" + "'t") is the mid-word case, not a new word.
+    func testConnectorContinuationOfTheCaretWordSkipsTheLeadingWordRule() {
+        XCTAssertEqual(
+            CompletionSeamGuard.verdict(
+                precedingText: "I don",
+                completion: "'t know",
+                spellingAssessment: { _ in
+                    XCTFail("a connector continuation must not be assessed as a leading word")
+                    return .correctableTypo
+                }
+            ),
+            .allow
+        )
+    }
+
+    /// Interior hyphens bind the token, so "state-of-the-art" is assessed once, as the user sees it.
+    func testHyphenatedLeadingWordIsAssessedAsOneToken() {
+        XCTAssertEqual(
+            CompletionSeamGuard.verdict(
+                precedingText: "A ",
+                completion: "state-of-the-art tool",
+                spellingAssessment: { word in
+                    XCTAssertEqual(word, "state-of-the-art")
+                    return .known
+                }
+            ),
+            .allow
+        )
+    }
+
+    /// Words under four letters are too ambiguous to judge, so even a classic typo like "teh"
+    /// passes without a lookup. This documents a deliberate limit, not an oversight.
+    func testShortLeadingWordIsAllowedWithoutSpellLookup() {
+        XCTAssertEqual(
+            CompletionSeamGuard.verdict(
+                precedingText: "Send ",
+                completion: "teh report",
+                spellingAssessment: { _ in
+                    XCTFail("short leading words must bypass spelling")
+                    return .correctableTypo
+                }
+            ),
+            .allow
+        )
+    }
+
     // MARK: - Streamed leading words
 
     /// Streaming buffers a lowercase prefix because checking it before its boundary is unreliable.
