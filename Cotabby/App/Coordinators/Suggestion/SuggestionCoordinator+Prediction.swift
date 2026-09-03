@@ -399,26 +399,11 @@ extension SuggestionCoordinator {
         ) else {
             return
         }
-
-        switch suggestionStreamingState.leadingWordGateState {
-        case .pending:
-            switch CompletionSeamGuard.streamedLeadingWordVerdict(
-                precedingText: liveContext.precedingText,
-                completion: partial.text,
-                spellingAssessment: { self.completionSpellingAssessment(for: $0) }
-            ) {
-            case .wait:
-                return
-            case .allow:
-                suggestionStreamingState.resolveLeadingWordGate(.allowed)
-            case .suppress:
-                suggestionStreamingState.resolveLeadingWordGate(.suppressed)
-                return
-            }
-        case .suppressed:
+        guard passesStreamedLeadingWordGate(
+            precedingText: liveContext.precedingText,
+            completion: partial.text
+        ) else {
             return
-        case .allowed:
-            break
         }
 
         _ = interactionState.startSession(
@@ -433,6 +418,35 @@ extension SuggestionCoordinator {
             context: liveContext,
             isRightToLeft: TextDirectionDetector.isRightToLeft(liveContext.precedingText)
         )
+    }
+
+    /// Resolves the generation-scoped leading-word gate for one streamed partial and returns whether
+    /// the partial may render. A pending gate consults the seam guard, which either keeps buffering
+    /// (`wait`) or settles the gate for the rest of this generation; a settled gate answers without
+    /// touching the spell checker again. Kept separate so `applyStreamedPartial` stays within the
+    /// project's cyclomatic-complexity budget.
+    private func passesStreamedLeadingWordGate(precedingText: String, completion: String) -> Bool {
+        switch suggestionStreamingState.leadingWordGateState {
+        case .allowed:
+            return true
+        case .suppressed:
+            return false
+        case .pending:
+            switch CompletionSeamGuard.streamedLeadingWordVerdict(
+                precedingText: precedingText,
+                completion: completion,
+                spellingAssessment: { self.completionSpellingAssessment(for: $0) }
+            ) {
+            case .wait:
+                return false
+            case .allow:
+                suggestionStreamingState.resolveLeadingWordGate(.allowed)
+                return true
+            case .suppress:
+                suggestionStreamingState.resolveLeadingWordGate(.suppressed)
+                return false
+            }
+        }
     }
 
     /// Runs the typo gate for the current word. Returns `true` when it handled the cycle by suppressing,

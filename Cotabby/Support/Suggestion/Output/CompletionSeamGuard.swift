@@ -4,7 +4,7 @@ import Foundation
 /// mid-word splices that misspell the joined word ("gre" + "atful"), and correctable misspellings
 /// in the first generated word. Showing nothing beats presenting any of these as an insertion.
 ///
-/// Both rules are deliberately narrow so they fire rarely:
+/// All three rules are deliberately narrow so they fire rarely:
 ///
 /// - **Junk run**: a run of four or more identical punctuation/symbol characters inside the
 ///   completion, unless the run merely extends an identical run the user already has at the caret
