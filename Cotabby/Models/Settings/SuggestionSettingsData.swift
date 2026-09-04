@@ -11,6 +11,8 @@ struct SuggestionGeneralSettings: Equatable {
     var disabledAppRules: [DisabledApplicationRule]
     var suggestInIntegratedTerminals: Bool
     var isPerformanceTrackingEnabled: Bool
+    /// Whether suggestions pause while Low Power Mode is active.
+    var isLowPowerModeAutoDisableEnabled: Bool
 }
 
 /// Backend selection, endpoint configuration, and power-source routing.
@@ -86,17 +88,18 @@ struct SuggestionInlineFeatureSettings: Equatable {
 
 /// One complete physical key binding. Keeping key code, modifiers, and label together prevents a
 /// domain value from representing a half-updated shortcut.
-struct SuggestionShortcutBindingSettings: Equatable {
+struct SuggestionShortcutBindingSettings: Codable, Equatable, Sendable {
     var keyCode: CGKeyCode
     var modifiers: ShortcutModifierMask
     var label: String
 }
 
-/// The three independently configurable shortcut actions.
+/// The independently configurable shortcut actions and app-specific overrides.
 struct SuggestionShortcutSettings: Equatable {
     var acceptance: SuggestionShortcutBindingSettings
     var fullAcceptance: SuggestionShortcutBindingSettings
     var globalToggle: SuggestionShortcutBindingSettings
+    var perAppOverrides: [PerAppShortcutOverride]
 }
 
 /// Pure domain representation of every durable suggestion preference.
@@ -139,6 +142,11 @@ extension SuggestionSettingsData {
     var isPerformanceTrackingEnabled: Bool {
         get { general.isPerformanceTrackingEnabled }
         set { general.isPerformanceTrackingEnabled = newValue }
+    }
+
+    var isLowPowerModeAutoDisableEnabled: Bool {
+        get { general.isLowPowerModeAutoDisableEnabled }
+        set { general.isLowPowerModeAutoDisableEnabled = newValue }
     }
 
     var selectedEngine: SuggestionEngineKind {
@@ -419,5 +427,10 @@ extension SuggestionSettingsData {
     var globalToggleKeyLabel: String {
         get { shortcuts.globalToggle.label }
         set { shortcuts.globalToggle.label = newValue }
+    }
+
+    var perAppShortcutOverrides: [PerAppShortcutOverride] {
+        get { shortcuts.perAppOverrides }
+        set { shortcuts.perAppOverrides = newValue }
     }
 }

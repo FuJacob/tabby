@@ -117,4 +117,25 @@ final class SuggestionCoordinatorLifecycleTests: XCTestCase {
         XCTAssertTrue(rig.visualContext.startedSessions.isEmpty)
         XCTAssertEqual(rig.visualContext.cancelCalls, [true])
     }
+
+    func test_settingsChange_autoDisablingWhileAlreadyInLowPowerModeDoesNotRestartThePipeline() {
+        let rig = retained(makeCoordinatorRig(
+            lowPowerModeEnabled: true,
+            settingsSnapshot: CotabbyTestFixtures.settingsSnapshot(
+                isLowPowerModeAutoDisableEnabled: false,
+                debounceMilliseconds: 1
+            )
+        ))
+
+        rig.coordinator.handleSuggestionSettingsChange(
+            CotabbyTestFixtures.settingsSnapshot(
+                isLowPowerModeAutoDisableEnabled: true,
+                debounceMilliseconds: 1
+            )
+        )
+
+        XCTAssertNotEqual(rig.coordinator.state, .debouncing)
+        XCTAssertTrue(rig.visualContext.startedSessions.isEmpty)
+        XCTAssertEqual(rig.visualContext.cancelCalls, [true])
+    }
 }

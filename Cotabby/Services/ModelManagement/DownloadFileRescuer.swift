@@ -11,7 +11,7 @@ import Foundation
 /// test without mocking the whole networking stack. Separating the file-move
 /// decision from the delegate callback means the decision can be tested
 /// with just a real `FileManager` and a pair of real file URLs.
-enum DownloadFileRescuer {
+nonisolated enum DownloadFileRescuer {
     /// Moves the URLSession-provided temp file at `location` to a holding URL
     /// we own, synchronously, within the single delegate callback where the
     /// source file is still valid.

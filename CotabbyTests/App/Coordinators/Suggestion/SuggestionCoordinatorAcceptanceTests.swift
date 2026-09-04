@@ -493,6 +493,7 @@ final class SuggestionCoordinatorAcceptanceTests: XCTestCase {
         settingsProvider.snapshot = settingsSnapshot
         let coordinator = SuggestionCoordinator(
             permissionManager: StubSuggestionPermissionProvider(),
+            lowPowerModeProvider: StubSuggestionLowPowerModeProvider(),
             focusModel: StubSuggestionFocusProvider(snapshot: focusSnapshot),
             inputMonitor: inputMonitor,
             overlayController: StubSuggestionOverlayController(state: overlayState),
@@ -531,6 +532,17 @@ private final class StubSuggestionPermissionProvider: SuggestionPermissionProvid
 
     var screenRecordingGrantedPublisher: AnyPublisher<Bool, Never> {
         screenSubject.eraseToAnyPublisher()
+    }
+}
+
+@MainActor
+private final class StubSuggestionLowPowerModeProvider: SuggestionLowPowerModeProviding {
+    var isLowPowerModeEnabled = false
+
+    private let subject = PassthroughSubject<Bool, Never>()
+
+    var lowPowerModeChanges: AnyPublisher<Bool, Never> {
+        subject.eraseToAnyPublisher()
     }
 }
 

@@ -156,6 +156,14 @@ final class SuggestionSettingsStoreTests: XCTestCase {
         XCTAssertTrue(data.isMenuBarIconVisible)
     }
 
+    func test_load_lowPowerModeAutoDisableDefaultsOn() async {
+        let defaults = makeIsolatedDefaults()
+
+        let data = SuggestionSettingsStore(userDefaults: defaults).load(configuration: .standard)
+
+        XCTAssertTrue(data.isLowPowerModeAutoDisableEnabled)
+    }
+
     func test_saveThenLoad_roundTripsScalarFields() async {
         let defaults = makeIsolatedDefaults()
         let store = SuggestionSettingsStore(userDefaults: defaults)
@@ -170,6 +178,7 @@ final class SuggestionSettingsStoreTests: XCTestCase {
         store.saveMenuBarWordCountVisible(false)
         store.saveFadeInSuggestions(false)
         store.saveFadeInDurationSeconds(0.25)
+        store.saveLowPowerModeAutoDisableEnabled(false)
 
         let data = store.load(configuration: .standard)
 
@@ -183,6 +192,7 @@ final class SuggestionSettingsStoreTests: XCTestCase {
         XCTAssertFalse(data.isMenuBarWordCountVisible)
         XCTAssertFalse(data.fadeInSuggestions)
         XCTAssertEqual(data.fadeInDurationSeconds, 0.25, accuracy: 0.0001)
+        XCTAssertFalse(data.isLowPowerModeAutoDisableEnabled)
     }
 
     func test_saveThenLoad_roundTripsIndefinitePause() async {
@@ -617,6 +627,7 @@ final class SuggestionSettingsStoreTests: XCTestCase {
         store.saveEnabledSpellingDictionaryCodes([])
         store.saveAutomaticallyFixTypos(true)
         store.savePerformanceTrackingEnabled(true)
+        store.saveLowPowerModeAutoDisableEnabled(false)
         store.saveMenuBarWordCountVisible(false)
         store.saveMirrorPreference(.alwaysMirror)
         store.saveUserName("Ada")

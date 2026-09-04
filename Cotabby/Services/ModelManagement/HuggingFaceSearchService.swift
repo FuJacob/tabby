@@ -148,9 +148,12 @@ final class HuggingFaceSearchService: ObservableObject {
         accumulatedResults = []
     }
 
-    func makeDownloadableModel(from file: HFRepoFile, repoId: String) -> DownloadableRuntimeModel? {
+    static func makeDownloadableModel(
+        from file: HFRepoFile,
+        repoId: String
+    ) -> DownloadableRuntimeModel? {
         // HuggingFace repo paths can include subdirectories (e.g. "gguf/model-Q4.gguf").
-        // Use only the leaf filename so the download lands flat in Tabby's model directory.
+        // Use only the leaf filename so the download lands flat in Cotabby's model directory.
         let leafFilename = (file.path as NSString).lastPathComponent
         guard let url = file.downloadURL(repoId: repoId) else { return nil }
         return DownloadableRuntimeModel(
@@ -158,7 +161,7 @@ final class HuggingFaceSearchService: ObservableObject {
             displayName: leafFilename,
             downloadURL: url,
             approximateSizeInGigabytes: file.sizeInGigabytes,
-            expectedSizeBytes: nil,
+            expectedSizeBytes: file.size,
             sha256: nil
         )
     }

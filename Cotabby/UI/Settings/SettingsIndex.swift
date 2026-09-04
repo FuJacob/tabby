@@ -57,6 +57,7 @@ enum SettingsItem: String, CaseIterable, Identifiable {
     case appleIntelligenceAvailability
     case modelStatus
     case selectedModel
+    case lowPowerModeAutoDisable
     case powerBasedModelSwitching
     case batteryModel
     case pluggedInModel
@@ -137,6 +138,7 @@ enum SettingsItem: String, CaseIterable, Identifiable {
         case .appleIntelligenceAvailability: return "Apple Intelligence Availability"
         case .modelStatus: return "Model Status"
         case .selectedModel: return "Selected Model"
+        case .lowPowerModeAutoDisable: return "Pause in Low Power Mode"
         case .powerBasedModelSwitching: return "Switch Based on Power Source"
         case .batteryModel: return "On Battery"
         case .pluggedInModel: return "Plugged In"
@@ -212,6 +214,7 @@ enum SettingsItem: String, CaseIterable, Identifiable {
         case .appleIntelligenceAvailability: return "apple.logo"
         case .modelStatus: return "info.circle"
         case .selectedModel: return "shippingbox"
+        case .lowPowerModeAutoDisable: return "bolt.slash.circle"
         case .powerBasedModelSwitching: return "battery.100.bolt"
         case .batteryModel: return "battery.25"
         case .pluggedInModel: return "powerplug"
@@ -263,7 +266,7 @@ enum SettingsItem: String, CaseIterable, Identifiable {
         case .extendedContext, .contextLivePreview:
             return .context
         case .engine, .appleIntelligenceAvailability, .modelStatus, .selectedModel,
-             .powerBasedModelSwitching, .batteryModel, .pluggedInModel,
+             .lowPowerModeAutoDisable, .powerBasedModelSwitching, .batteryModel, .pluggedInModel,
              .downloadModels, .huggingFaceBrowser, .modelsFolder, .lmStudio,
              .endpointBaseURL, .endpointAPIMode, .endpointAPIKey, .endpointStatus, .endpointModel:
             return .engineAndModel
@@ -324,6 +327,7 @@ enum SettingsItem: String, CaseIterable, Identifiable {
         case .appleIntelligenceAvailability: return "Whether this Mac can run Apple Intelligence."
         case .modelStatus: return "Whether the local model is loaded and ready."
         case .selectedModel: return "Which downloaded model generates suggestions."
+        case .lowPowerModeAutoDisable: return "Pause suggestions while Low Power Mode is active."
         case .powerBasedModelSwitching: return "Use a different engine or model by power source."
         case .batteryModel: return "Engine and model used while on battery."
         case .pluggedInModel: return "Engine and model used while plugged in."
@@ -485,6 +489,8 @@ enum SettingsItem: String, CaseIterable, Identifiable {
         case .selectedModel:
             return ["model", "gguf", "pick", "selected", "active model", "choose model",
                     "current model", "default model"]
+        case .lowPowerModeAutoDisable:
+            return ["low power mode", "battery saver", "pause", "power", "automatic", "auto disable"]
         case .powerBasedModelSwitching:
             return ["power", "battery", "plugged", "energy", "ac", "charger",
                     "switch model", "power source", "auto switch", "adaptive",

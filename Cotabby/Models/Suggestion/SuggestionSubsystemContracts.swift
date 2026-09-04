@@ -22,6 +22,13 @@ protocol SuggestionPermissionProviding: AnyObject {
     var screenRecordingGrantedPublisher: AnyPublisher<Bool, Never> { get }
 }
 
+/// Supplies the initial Low Power Mode value separately from its changes-only stream.
+@MainActor
+protocol SuggestionLowPowerModeProviding: AnyObject {
+    var isLowPowerModeEnabled: Bool { get }
+    var lowPowerModeChanges: AnyPublisher<Bool, Never> { get }
+}
+
 @MainActor
 protocol SuggestionFocusProviding: AnyObject {
     var snapshot: FocusSnapshot { get }

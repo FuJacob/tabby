@@ -48,7 +48,9 @@ struct RuntimeModelOption: Equatable, Hashable, Sendable, Identifiable {
 }
 
 /// Downloadable model metadata used by onboarding and menu-based model installation.
-/// Keeping this as app-level data lets us update app code and model artifacts independently.
+/// The source URL is the transfer identity, while `filename` is the flat on-disk destination.
+/// Keeping those identities separate prevents repositories that publish the same leaf filename
+/// from sharing pause, cancellation, or resume state.
 struct DownloadableRuntimeModel: Equatable, Hashable, Sendable, Identifiable {
     let filename: String
     let displayName: String
@@ -65,7 +67,7 @@ struct DownloadableRuntimeModel: Equatable, Hashable, Sendable, Identifiable {
     let sha256: String?
     let alternateFilenames: [String]
 
-    var id: String { filename }
+    var id: String { downloadURL.absoluteString }
     var actualModelName: String { filename }
     var approximateSizeLabel: String { String(format: "~%.1f GB", approximateSizeInGigabytes) }
 

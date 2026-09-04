@@ -24,6 +24,8 @@ final class SuggestionCoordinator: ObservableObject {
     // Core collaborators. The coordinator depends on capability-shaped protocols here so its
     // orchestration logic stays separated from concrete service implementations.
     let permissionManager: any SuggestionPermissionProviding
+    /// Provides the initial Low Power Mode state and subsequent transitions.
+    let lowPowerModeProvider: any SuggestionLowPowerModeProviding
     let focusModel: any SuggestionFocusProviding
     let inputMonitor: any SuggestionInputMonitoring
     let overlayController: any SuggestionOverlayControlling
@@ -139,6 +141,7 @@ final class SuggestionCoordinator: ObservableObject {
 
     init(
         permissionManager: any SuggestionPermissionProviding,
+        lowPowerModeProvider: any SuggestionLowPowerModeProviding,
         focusModel: any SuggestionFocusProviding,
         inputMonitor: any SuggestionInputMonitoring,
         overlayController: any SuggestionOverlayControlling,
@@ -161,6 +164,7 @@ final class SuggestionCoordinator: ObservableObject {
             forKey: Self.totalTabAcceptedWordCountDefaultsKey)
 
         self.permissionManager = permissionManager
+        self.lowPowerModeProvider = lowPowerModeProvider
         self.focusModel = focusModel
         self.inputMonitor = inputMonitor
         self.overlayController = overlayController
@@ -204,6 +208,12 @@ final class SuggestionCoordinator: ObservableObject {
         permissionManager.screenRecordingGrantedPublisher
             .sink { [weak self] _ in
                 self?.handlePermissionChange()
+            }
+            .store(in: &cancellables)
+
+        lowPowerModeProvider.lowPowerModeChanges
+            .sink { [weak self] _ in
+                self?.handleLowPowerModeChange()
             }
             .store(in: &cancellables)
 

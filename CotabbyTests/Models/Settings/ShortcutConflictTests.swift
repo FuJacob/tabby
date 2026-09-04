@@ -71,12 +71,102 @@ final class ShortcutConflictTests: XCTestCase {
         XCTAssertNil(conflict)
     }
 
+    // MARK: - Per-app override scoping
+
+    func test_perAppConflict_allowsSameComboAcrossDifferentApps() {
+        let model = makeModel()
+        model.setPerAppAcceptKey(
+            bundleIdentifier: "com.apple.notes", displayName: "Notes",
+            keyCode: 49, modifiers: [], label: "Space"
+        )
+
+        let conflict = model.conflictingPerAppShortcutName(
+            forBundleIdentifier: "com.apple.terminal",
+            keyCode: 49,
+            modifiers: [],
+            excluding: .acceptWord
+        )
+        XCTAssertNil(conflict)
+    }
+
+    func test_perAppConflict_flagsSameAppCrossActionCollision() {
+        let model = makeModel()
+        model.setPerAppFullAcceptKey(
+            bundleIdentifier: "com.apple.notes", displayName: "Notes",
+            keyCode: 49, modifiers: [], label: "Space"
+        )
+
+        let conflict = model.conflictingPerAppShortcutName(
+            forBundleIdentifier: "com.apple.notes",
+            keyCode: 49,
+            modifiers: [],
+            excluding: .acceptWord
+        )
+        XCTAssertEqual(conflict, "Accept Entire Suggestion")
+    }
+
+    func test_perAppConflict_flagsGlobalFullAcceptFallbackCollision() {
+        let model = makeModel()
+
+        let conflict = model.conflictingPerAppShortcutName(
+            forBundleIdentifier: "com.apple.notes",
+            keyCode: model.fullAcceptanceKeyCode,
+            modifiers: model.fullAcceptanceKeyModifiers,
+            excluding: .acceptWord
+        )
+
+        XCTAssertEqual(conflict, "Accept Entire Suggestion")
+    }
+
+    func test_perAppConflict_flagsGlobalAcceptFallbackCollision() {
+        let model = makeModel()
+
+        let conflict = model.conflictingPerAppShortcutName(
+            forBundleIdentifier: "com.apple.notes",
+            keyCode: model.acceptanceKeyCode,
+            modifiers: model.acceptanceKeyModifiers,
+            excluding: .acceptEntireSuggestion
+        )
+
+        XCTAssertEqual(conflict, "Accept Word")
+    }
+
+    func test_perAppConflict_flagsGlobalToggleCollision() {
+        let model = makeModel()
+        model.setGlobalToggleKey(keyCode: 49, modifiers: [.command, .shift], label: "⌘⇧Space")
+        let conflict = model.conflictingPerAppShortcutName(
+            forBundleIdentifier: "com.apple.notes",
+            keyCode: 49,
+            modifiers: [.command, .shift],
+            excluding: .acceptWord
+        )
+        XCTAssertEqual(conflict, "Toggle Tabby")
+    }
+
+    func test_perAppConflict_allowsRebindingSameActionToSameKey() {
+        let model = makeModel()
+        model.setPerAppAcceptKey(
+            bundleIdentifier: "com.apple.notes", displayName: "Notes",
+            keyCode: 49, modifiers: [], label: "Space"
+        )
+        let conflict = model.conflictingPerAppShortcutName(
+            forBundleIdentifier: "com.apple.notes",
+            keyCode: 49,
+            modifiers: [],
+            excluding: .acceptWord
+        )
+        XCTAssertNil(conflict)
+    }
+
     // MARK: - Helpers
 
     private func makeModel() -> SuggestionSettingsModel {
         let suiteName = "cotabby.test.shortcutConflict.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
         return SuggestionSettingsModel(configuration: .standard, userDefaults: defaults)
     }
 }

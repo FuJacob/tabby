@@ -82,6 +82,7 @@ struct SuggestionSettingsStore {
     private static let isGloballyEnabledDefaultsKey = "cotabbyGloballyEnabled"
     private static let pauseStateDefaultsKey = "cotabbySuggestionPauseState"
     private static let disabledAppRulesDefaultsKey = "cotabbyDisabledAppRules"
+    private static let perAppShortcutOverridesDefaultsKey = "cotabbyPerAppShortcutOverrides"
     private static let suggestInIntegratedTerminalsDefaultsKey = "cotabbySuggestInIntegratedTerminals"
     private static let showCaretIndicatorDefaultsKey = "cotabbyShowCaretIndicator"
     private static let selectedIndicatorModeDefaultsKey = "cotabbySelectedIndicatorMode"
@@ -113,6 +114,7 @@ struct SuggestionSettingsStore {
     private static let spellingDictionaryCodesDefaultsKey = "cotabbyEnabledSpellingDictionaryCodes"
     private static let automaticallyFixTyposDefaultsKey = "cotabbyAutomaticallyFixTypos"
     private static let performanceTrackingEnabledDefaultsKey = "cotabbyPerformanceTrackingEnabled"
+    private static let lowPowerModeAutoDisableDefaultsKey = "cotabbyLowPowerModeAutoDisableEnabled"
     /// Shared with `CotabbyApp` because SwiftUI's scene-level `@AppStorage` is what invalidates the
     /// `MenuBarExtra` insertion binding when the settings model writes this preference.
     static let menuBarIconVisibleDefaultsKey = "cotabbyMenuBarIconVisible"
@@ -167,6 +169,7 @@ struct SuggestionSettingsStore {
         isGloballyEnabledDefaultsKey,
         pauseStateDefaultsKey,
         disabledAppRulesDefaultsKey,
+        perAppShortcutOverridesDefaultsKey,
         suggestInIntegratedTerminalsDefaultsKey,
         showCaretIndicatorDefaultsKey,
         selectedIndicatorModeDefaultsKey,
@@ -190,6 +193,7 @@ struct SuggestionSettingsStore {
         spellingDictionaryCodesDefaultsKey,
         automaticallyFixTyposDefaultsKey,
         performanceTrackingEnabledDefaultsKey,
+        lowPowerModeAutoDisableDefaultsKey,
         menuBarWordCountVisibleDefaultsKey,
         mirrorPreferenceDefaultsKey,
         userNameDefaultsKey,
@@ -244,6 +248,7 @@ struct SuggestionSettingsStore {
             .flatMap { try? JSONDecoder().decode(SuggestionPauseState.self, from: $0) }
         let resolvedPauseState = persistedPauseState?.activeState()
         let resolvedDisabledAppRules = loadDisabledAppRules()
+        let resolvedPerAppShortcutOverrides = loadPerAppShortcutOverrides()
         let resolvedShowIndicator: Bool = if let modeString = userDefaults.string(
             forKey: Self.selectedIndicatorModeDefaultsKey
         ) {
@@ -335,6 +340,9 @@ struct SuggestionSettingsStore {
         // in from the Performance pane.
         let resolvedPerformanceTrackingEnabled =
             userDefaults.object(forKey: Self.performanceTrackingEnabledDefaultsKey) as? Bool ?? false
+        // Existing installs lack this key; defaulting to true keeps the feature opt-out.
+        let resolvedLowPowerModeAutoDisableEnabled =
+            userDefaults.object(forKey: Self.lowPowerModeAutoDisableDefaultsKey) as? Bool ?? true
         // Existing installs keep the status item unless the user explicitly hides it. Hiding the
         // item must never terminate the accessory app because autocomplete continues in the background.
         let resolvedMenuBarIconVisible =
@@ -504,7 +512,8 @@ struct SuggestionSettingsStore {
                 pauseState: resolvedPauseState,
                 disabledAppRules: resolvedDisabledAppRules,
                 suggestInIntegratedTerminals: resolvedSuggestInIntegratedTerminals,
-                isPerformanceTrackingEnabled: resolvedPerformanceTrackingEnabled
+                isPerformanceTrackingEnabled: resolvedPerformanceTrackingEnabled,
+                isLowPowerModeAutoDisableEnabled: resolvedLowPowerModeAutoDisableEnabled
             ),
             engine: SuggestionEngineSettings(
                 selectedEngine: resolvedEngine,
@@ -580,7 +589,8 @@ struct SuggestionSettingsStore {
                     keyCode: resolvedGlobalToggleKeyCode,
                     modifiers: resolvedGlobalToggleKeyModifiers,
                     label: resolvedGlobalToggleKeyLabel
-                )
+                ),
+                perAppOverrides: resolvedPerAppShortcutOverrides
             )
         )
 
@@ -610,6 +620,7 @@ struct SuggestionSettingsStore {
         saveEnabledSpellingDictionaryCodes(data.enabledSpellingDictionaryCodes)
         saveAutomaticallyFixTypos(data.automaticallyFixTypos)
         savePerformanceTrackingEnabled(data.isPerformanceTrackingEnabled)
+        saveLowPowerModeAutoDisableEnabled(data.isLowPowerModeAutoDisableEnabled)
         saveMenuBarIconVisible(data.isMenuBarIconVisible)
         saveMenuBarWordCountVisible(data.isMenuBarWordCountVisible)
         saveMirrorPreference(data.mirrorPreference)
@@ -644,6 +655,7 @@ struct SuggestionSettingsStore {
             modifiers: data.globalToggleKeyModifiers,
             label: data.globalToggleKeyLabel
         )
+        savePerAppShortcutOverrides(data.perAppShortcutOverrides)
         saveAcceptanceGranularity(data.acceptanceGranularity)
         savePowerBasedModelSwitchingEnabled(data.isPowerBasedModelSwitchingEnabled)
         saveBatteryEngine(data.batteryEngine)
@@ -704,6 +716,18 @@ struct SuggestionSettingsStore {
 
         if let data = try? JSONEncoder().encode(rules) {
             userDefaults.set(data, forKey: Self.disabledAppRulesDefaultsKey)
+        }
+    }
+
+    /// Removing the key for an empty list keeps reset state identical to a fresh install.
+    func savePerAppShortcutOverrides(_ overrides: [PerAppShortcutOverride]) {
+        guard !overrides.isEmpty else {
+            userDefaults.removeObject(forKey: Self.perAppShortcutOverridesDefaultsKey)
+            return
+        }
+
+        if let data = try? JSONEncoder().encode(overrides) {
+            userDefaults.set(data, forKey: Self.perAppShortcutOverridesDefaultsKey)
         }
     }
 
@@ -824,6 +848,10 @@ struct SuggestionSettingsStore {
 
     func savePerformanceTrackingEnabled(_ enabled: Bool) {
         userDefaults.set(enabled, forKey: Self.performanceTrackingEnabledDefaultsKey)
+    }
+
+    func saveLowPowerModeAutoDisableEnabled(_ enabled: Bool) {
+        userDefaults.set(enabled, forKey: Self.lowPowerModeAutoDisableDefaultsKey)
     }
 
     func saveMenuBarIconVisible(_ visible: Bool) {
@@ -971,12 +999,60 @@ struct SuggestionSettingsStore {
         return sortedDisabledAppRules(Array(rulesByBundleIdentifier.values))
     }
 
+    // MARK: - Per-app shortcut override decoding
+
+    private func loadPerAppShortcutOverrides() -> [PerAppShortcutOverride] {
+        guard let data = userDefaults.data(forKey: Self.perAppShortcutOverridesDefaultsKey),
+              let decoded = try? JSONDecoder().decode([PerAppShortcutOverride].self, from: data)
+        else {
+            return []
+        }
+
+        return Self.sanitizedPerAppShortcutOverrides(decoded)
+    }
+
+    /// Normalizes identity fields and deduplicates rows while preserving explicitly tracked apps.
+    private static func sanitizedPerAppShortcutOverrides(
+        _ overrides: [PerAppShortcutOverride]
+    ) -> [PerAppShortcutOverride] {
+        var byBundle: [String: PerAppShortcutOverride] = [:]
+
+        for override in overrides {
+            guard let normalizedBundleIdentifier = normalizedBundleIdentifier(override.bundleIdentifier) else {
+                continue
+            }
+            byBundle[normalizedBundleIdentifier] = PerAppShortcutOverride(
+                bundleIdentifier: normalizedBundleIdentifier,
+                displayName: normalizedDisplayName(
+                    override.displayName,
+                    fallbackBundleIdentifier: normalizedBundleIdentifier
+                ),
+                acceptance: override.acceptance,
+                fullAcceptance: override.fullAcceptance
+            )
+        }
+
+        return sortedPerAppShortcutOverrides(Array(byBundle.values))
+    }
+
     // MARK: - Pure value normalizers (shared with the facade's setters)
 
     static func sortedDisabledAppRules(
         _ rules: [DisabledApplicationRule]
     ) -> [DisabledApplicationRule] {
         rules.sorted {
+            if $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedSame {
+                return $0.bundleIdentifier < $1.bundleIdentifier
+            }
+
+            return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
+    }
+
+    static func sortedPerAppShortcutOverrides(
+        _ overrides: [PerAppShortcutOverride]
+    ) -> [PerAppShortcutOverride] {
+        overrides.sorted {
             if $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedSame {
                 return $0.bundleIdentifier < $1.bundleIdentifier
             }
