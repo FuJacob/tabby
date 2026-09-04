@@ -138,7 +138,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
-        CotabbyLogger.app.info("Cotabby \(version) (build \(build)) launching on macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
+        CotabbyLogger.app.info(
+            "Cotabby \(version) (build \(build)) launching on macOS \(ProcessInfo.processInfo.operatingSystemVersionString)"
+        )
         applyLaunchAtLoginDefaultIfNeeded()
         startRuntimeIfPreferredEngineRequiresIt()
         focusModel.start()

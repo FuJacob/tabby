@@ -89,8 +89,9 @@ nonisolated final class Aria2DownloadService: @unchecked Sendable {
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
-        outputPipe.fileHandleForReading.readabilityHandler = { [progressHandler] handle in
-            let data = handle.availableData
+        // Shared by the readability handlers and the termination drain below, so bytes that arrive
+        // either way are parsed identically.
+        let consumeOutput: @Sendable (Data) -> Void = { [progressHandler] data in
             guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else {
                 return
             }
@@ -101,19 +102,33 @@ nonisolated final class Aria2DownloadService: @unchecked Sendable {
                 }
             }
         }
-
-        errorPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
+        let consumeError: @Sendable (Data) -> Void = { data in
             guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else {
                 return
             }
             errorBuffer.append(text)
         }
 
+        outputPipe.fileHandleForReading.readabilityHandler = { handle in
+            consumeOutput(handle.availableData)
+        }
+
+        errorPipe.fileHandleForReading.readabilityHandler = { handle in
+            consumeError(handle.availableData)
+        }
+
         return try await withCheckedThrowingContinuation { continuation in
             process.terminationHandler = { [processState] terminatedProcess in
                 outputPipe.fileHandleForReading.readabilityHandler = nil
                 errorPipe.fileHandleForReading.readabilityHandler = nil
+
+                // The readability handlers run on their own queue, so a process that exits right
+                // after its last write can terminate before those bytes were consumed; on a slow
+                // machine that turned "simulated aria failure" into a bare exit code. Draining to
+                // EOF here cannot block: the child's write ends closed when it exited, and the
+                // parent's copies were closed at launch.
+                consumeOutput(outputPipe.fileHandleForReading.readDataToEndOfFile())
+                consumeError(errorPipe.fileHandleForReading.readDataToEndOfFile())
 
                 continuation.resume(
                     with: Self.completionResult(
