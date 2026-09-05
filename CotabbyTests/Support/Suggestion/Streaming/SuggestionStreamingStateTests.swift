@@ -25,10 +25,12 @@ final class SuggestionStreamingStateTests: XCTestCase {
         XCTAssertTrue(state.enqueue(result(text: " old"), workID: 1))
 
         state.recordRendered(" old")
+        state.resolveLeadingWordGate(.allowed)
         state.beginGeneration()
 
         XCTAssertNil(state.renderedText)
         XCTAssertNil(state.pendingPartial)
+        XCTAssertEqual(state.leadingWordGateState, .pending)
         XCTAssertTrue(state.isDrainScheduled)
         XCTAssertFalse(state.enqueue(result(text: " new"), workID: 2))
 
@@ -41,11 +43,13 @@ final class SuggestionStreamingStateTests: XCTestCase {
         var state = SuggestionStreamingState()
         state.enqueue(result(text: " pending"), workID: 4)
         state.recordRendered(" pending")
+        state.resolveLeadingWordGate(.suppressed)
 
         state.clearSession()
 
         XCTAssertNil(state.renderedText)
         XCTAssertNil(state.pendingPartial)
+        XCTAssertEqual(state.leadingWordGateState, .pending)
         XCTAssertTrue(state.isDrainScheduled)
         XCTAssertNil(state.drain())
         XCTAssertFalse(state.isDrainScheduled)
@@ -59,6 +63,15 @@ final class SuggestionStreamingStateTests: XCTestCase {
         XCTAssertTrue(state.canRender(" world"))
         XCTAssertFalse(state.canRender(" wor"))
         XCTAssertFalse(state.canRender(" wild"))
+    }
+
+    /// A terminal first-word verdict remains reusable until the next generation resets the state.
+    func test_leadingWordGateCachesATerminalDecisionForTheGeneration() {
+        var state = SuggestionStreamingState()
+
+        XCTAssertEqual(state.leadingWordGateState, .pending)
+        state.resolveLeadingWordGate(.allowed)
+        XCTAssertEqual(state.leadingWordGateState, .allowed)
     }
 
     private func result(text: String) -> SuggestionResult {

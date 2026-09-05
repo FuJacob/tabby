@@ -390,10 +390,16 @@ extension SuggestionCoordinator {
             return
         }
 
-        // Streaming half of the seam guard: the pure junk-run rule only. The spell-lookup half
-        // is an XPC and partials drain at token cadence, so it stays on the final apply, which
-        // authoritatively replaces or suppresses whatever streamed.
+        // Junk checks remain cheap enough for every partial. The first generated word is buffered
+        // until its boundary arrives, then its spelling decision is cached for the generation so
+        // the AppKit/XPC lookup never runs at token cadence.
         guard CompletionSeamGuard.allowsStreamedPartial(
+            precedingText: liveContext.precedingText,
+            completion: partial.text
+        ) else {
+            return
+        }
+        guard passesStreamedLeadingWordGate(
             precedingText: liveContext.precedingText,
             completion: partial.text
         ) else {
@@ -412,6 +418,35 @@ extension SuggestionCoordinator {
             context: liveContext,
             isRightToLeft: TextDirectionDetector.isRightToLeft(liveContext.precedingText)
         )
+    }
+
+    /// Resolves the generation-scoped leading-word gate for one streamed partial and returns whether
+    /// the partial may render. A pending gate consults the seam guard, which either keeps buffering
+    /// (`wait`) or settles the gate for the rest of this generation; a settled gate answers without
+    /// touching the spell checker again. Kept separate so `applyStreamedPartial` stays within the
+    /// project's cyclomatic-complexity budget.
+    private func passesStreamedLeadingWordGate(precedingText: String, completion: String) -> Bool {
+        switch suggestionStreamingState.leadingWordGateState {
+        case .allowed:
+            return true
+        case .suppressed:
+            return false
+        case .pending:
+            switch CompletionSeamGuard.streamedLeadingWordVerdict(
+                precedingText: precedingText,
+                completion: completion,
+                spellingAssessment: { self.completionSpellingAssessment(for: $0) }
+            ) {
+            case .wait:
+                return false
+            case .allow:
+                suggestionStreamingState.resolveLeadingWordGate(.allowed)
+                return true
+            case .suppress:
+                suggestionStreamingState.resolveLeadingWordGate(.suppressed)
+                return false
+            }
+        }
     }
 
     /// Runs the typo gate for the current word. Returns `true` when it handled the cycle by suppressing,
@@ -482,6 +517,20 @@ extension SuggestionCoordinator {
 
         return symSpellCorrector.bestCorrection(for: word, language: language)
             ?? spellChecker.bestCorrection(for: word)
+    }
+
+    /// Collapses native typo detection and correction availability into the seam guard's single
+    /// spelling contract. Keeping this adapter at the orchestration boundary lets the pure guard
+    /// express its policy without knowing about `NSSpellChecker` or accepting contradictory hooks.
+    private func completionSpellingAssessment(
+        for word: String
+    ) -> CompletionSeamGuard.SpellingAssessment {
+        guard spellChecker.isTypo(word) else {
+            return .known
+        }
+        return spellChecker.bestCorrection(for: word) == nil
+            ? .uncorrectableTypo
+            : .correctableTypo
     }
 
     /// Replaces a completed typo after Space without creating a visible correction session.
@@ -608,10 +657,16 @@ extension SuggestionCoordinator {
     }
 
     private static func seamSuppressionReason(for verdict: CompletionSeamGuard.Verdict) -> String {
-        if case .seamMisspelling = verdict {
+        switch verdict {
+        case .seamMisspelling:
             return "seamMisspelling"
+        case .leadingWordMisspelling:
+            return "leadingWordMisspelling"
+        case .junkPunctuationRun:
+            return "seamJunkPunctuationRun"
+        case .allow:
+            return "unknownSeamGuardSuppression"
         }
-        return "seamJunkPunctuationRun"
     }
 
     /// Promotes a generated result to `ready` only when it is still fresh for the current field.
@@ -730,13 +785,14 @@ extension SuggestionCoordinator {
             return
         }
 
-        // Last line of defense before display: junk punctuation runs and mid-word splices that
-        // misspell the word being typed read as glitches, so showing nothing beats showing them.
-        // The spell lookup runs at most once per generation and only in the mid-word case.
+        // Last line of defense before display: junk punctuation runs, mid-word splices, and newly
+        // started words that the native checker can actually correct read as glitches, so showing
+        // nothing beats showing them. The leading-word check is intentionally fail-open for names
+        // and jargon with no correction candidate.
         let seamVerdict = CompletionSeamGuard.verdict(
             precedingText: liveContext.precedingText,
             completion: result.text,
-            isKnownWord: { !spellChecker.isTypo($0) }
+            spellingAssessment: { self.completionSpellingAssessment(for: $0) }
         )
         if seamVerdict != .allow {
             clearSuggestion()
