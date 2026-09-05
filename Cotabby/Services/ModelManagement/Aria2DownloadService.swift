@@ -109,12 +109,20 @@ nonisolated final class Aria2DownloadService: @unchecked Sendable {
             errorBuffer.append(text)
         }
 
+        // Every read from either pipe, whether a readability callback or the termination drain
+        // below, runs on this one serial queue. That is what makes the drain complete: a callback
+        // that already pulled bytes with `availableData` finishes appending them before the drain
+        // starts, and a callback that lands after the drain finds the pipe at EOF. Detaching a
+        // handler alone does not wait for an in-flight callback, so without the queue the final
+        // stderr write could still be lost on a slow machine.
+        let pipeReadQueue = DispatchQueue(label: "com.cotabby.aria2.pipe-read")
+
         outputPipe.fileHandleForReading.readabilityHandler = { handle in
-            consumeOutput(handle.availableData)
+            pipeReadQueue.sync { consumeOutput(handle.availableData) }
         }
 
         errorPipe.fileHandleForReading.readabilityHandler = { handle in
-            consumeError(handle.availableData)
+            pipeReadQueue.sync { consumeError(handle.availableData) }
         }
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -122,19 +130,23 @@ nonisolated final class Aria2DownloadService: @unchecked Sendable {
                 outputPipe.fileHandleForReading.readabilityHandler = nil
                 errorPipe.fileHandleForReading.readabilityHandler = nil
 
-                // The readability handlers run on their own queue, so a process that exits right
-                // after its last write can terminate before those bytes were consumed; on a slow
-                // machine that turned "simulated aria failure" into a bare exit code. Draining to
-                // EOF here cannot block: the child's write ends closed when it exited, and the
-                // parent's copies were closed at launch.
-                consumeOutput(outputPipe.fileHandleForReading.readDataToEndOfFile())
-                consumeError(errorPipe.fileHandleForReading.readDataToEndOfFile())
+                // A process that exits right after its last write can terminate before the
+                // readability callbacks consumed those bytes; on a slow machine that turned
+                // "simulated aria failure" into a bare exit code. Drain both pipes to EOF on the
+                // read queue, then snapshot the message on the same queue so nothing appends after
+                // the snapshot. The drain cannot block: the child's write ends closed when it
+                // exited, and the parent's copies were closed at launch.
+                let errorMessage = pipeReadQueue.sync {
+                    consumeOutput(outputPipe.fileHandleForReading.readDataToEndOfFile())
+                    consumeError(errorPipe.fileHandleForReading.readDataToEndOfFile())
+                    return errorBuffer.value
+                }
 
                 continuation.resume(
                     with: Self.completionResult(
                         status: terminatedProcess.terminationStatus,
                         requestedOutcome: processState.finish(),
-                        errorMessage: errorBuffer.value,
+                        errorMessage: errorMessage,
                         targetURL: targetURL
                     )
                 )
